@@ -3,5 +3,5 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="Volumetric-SIGGRAPH.vcxproj" />
+  <Project Path="Volumetric-SIGGRAPH.vcxproj" Id="0ec0a404-33b4-4980-8643-8ac996d8471e" />
 </Solution>
