@@ -367,3 +367,7 @@ FodyWeavers.xsd
 vcpkg_installed/
 
 Volumetric-SIGGRAPH.vcxproj
+
+# CMake build output
+build/
+CMakeUserPresets.json
