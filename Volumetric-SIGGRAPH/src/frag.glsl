@@ -8,8 +8,16 @@ float sdf_sphere(vec3 p, vec3 center, float rad) {
     return length(center - p) - rad;
 }
 
+float smin(float a, float b, float k) {
+    k *= 6.0;
+    float h = max( k-abs(a-b), 0.0 )/k;
+    return min( a, b ) - h*h*h*k*(1.0/6.0);
+}
+
 float map(vec3 p) {
-    return sdf_sphere(p, vec3(0.0, 0.0, 10.0), 5.0);
+    float s1 = sdf_sphere(p, vec3(-0.5, 0.0, 2.0), 1.0);
+    float s2 = sdf_sphere(p, vec3(0.5, 0.0, 2.0), 1.0);
+    return smin(s1, s2, 0.05);
 }
 
 float sphere_trace(vec3 ro, vec3 rd, out vec3 pos) {
@@ -19,7 +27,7 @@ float sphere_trace(vec3 ro, vec3 rd, out vec3 pos) {
         p = ro + t * rd;
         pos = p;
         float d = map(p);
-        if (d < 0.001) {
+        if (d < 0.00001) {
             return t;
         }
 
@@ -34,17 +42,17 @@ float sphere_trace(vec3 ro, vec3 rd, out vec3 pos) {
 }
 
 vec3 integrate(vec3 ro, vec3 rd) {
-    vec3 bg_col = vec3(0.0, 0.0, 0.0);
+    vec3 bg_col = vec3(0, 0, 0);
     vec3 pos;
 
     if (sphere_trace(ro, rd, pos) < 0.0) { // check if we hit anything w/ sphere trace, store pos if we do
         return bg_col;
     }
 
-    float step_size = 0.05;
-    float sigma_a = 0.5;
+    float step_size = 0.005;
+    float sigma_a = 1.2;
 
-    vec3 light_pos = vec3(0, -5, 2);
+    vec3 light_pos = vec3(0, 5, 0);
     vec3 light_color = vec3(1.0, 1.0, 1.0);
     
     float transparency = 1.0;
