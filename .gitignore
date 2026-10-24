@@ -366,4 +366,8 @@ FodyWeavers.xsd
 
 vcpkg_installed/
 
-Volumetric-SIGGRAPH.vcxproj
+#more 
+
+build/
+.vscode/
+

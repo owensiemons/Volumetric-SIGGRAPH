@@ -1,0 +1,39 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "cppbuild",
+            "label": "C/C++: clang++ 生成活动文件",
+            "command": "/usr/bin/clang++",
+            "args": [
+                "-std=c++17",
+                "-g",
+                "-I${workspaceFolder}/include",
+                "-I/opt/homebrew/include",
+                "-L/opt/homebrew/lib",
+                "${workspaceFolder}/src/glad.c",
+                "${workspaceFolder}/main.cpp",
+                "-lglfw",
+                "-framework", "OpenGL",
+                "-framework", "Cocoa",
+                "-framework", "IOKit",
+                "-framework", "CoreVideo",
+                "-o", "${workspaceFolder}/build/Volumetric-SIGGRAPH-build",
+                "-pedantic-errors",
+                "-ggdb",
+                "-Wall",
+                "-Weffc++",
+                "-Wextra",
+                "-Wconversion",
+                "-Wsign-conversion",
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": [
+                "$gcc"
+            ]
+        }
+    ]
+}
