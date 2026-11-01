@@ -1,1 +1,0 @@
-/usr/bin/c++ -g -arch arm64 -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/volumetric.dir/src/main.cpp.o CMakeFiles/volumetric.dir/src/glad.c.o -o volumetric  -Wl,-rpath,/opt/homebrew/lib /opt/homebrew/lib/libglfw.3.5.dylib -framework OpenGL
