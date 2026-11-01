@@ -1,11 +1,24 @@
-cmake_minimum_required(VERSION 3.21)
-project(VolumetricSIGGRAPH CXX)
+cmake_minimum_required(VERSION 3.10)
+project(volumetric)
 
-set(CMAKE_CXX_STANDARD 20)
+# Require C++17
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(glfw3 CONFIG REQUIRED)
-find_package(glad CONFIG REQUIRED)
+# Find GLFW and OpenGL
+find_package(glfw3 REQUIRED)
+find_package(OpenGL REQUIRED)
 
-add_executable(Volumetric-SIGGRAPH main.cpp)
-target_link_libraries(Volumetric-SIGGRAPH PRIVATE glfw glad::glad)
+
+
+
+
+
+# Create the executable from the src directory
+add_executable(volumetric src/main.cpp src/glad.c)
+
+
+target_include_directories(volumetric PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+# Link the libraries
+target_link_libraries(volumetric glfw OpenGL::GL)
