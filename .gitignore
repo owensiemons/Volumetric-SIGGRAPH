@@ -372,3 +372,10 @@ build/
 
 .vscode/
 
+CMakeLists.txt
+
+render_output.ppm
+
+*.DS_Store
+
+

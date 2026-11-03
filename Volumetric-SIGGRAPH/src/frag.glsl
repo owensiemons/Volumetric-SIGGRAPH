@@ -1,102 +1,125 @@
 #version 330 core
+out vec4 FragColor;
 
-out vec4 fragColor;
+uniform vec2  u_resolution;
+uniform vec3  u_cameraPos;
+uniform vec3  u_cameraDir;
+uniform vec3  u_cameraUp;
+uniform float u_tanHalfFov;
+uniform vec3  u_sunDir;
+uniform vec3  u_sunColor;
+uniform float u_sunIntensity;
+uniform float u_planetRadius;
+uniform float u_atmosphereRadius;
+uniform vec3  u_betaRayleigh;
+uniform float u_rayleighScaleHeight;
+uniform vec3  u_betaMie;
+uniform float u_mieScaleHeight;
+uniform float u_mieG;
+uniform float u_exposure;
 
-uniform vec2 iResolution;
+#define PI 3.14159265359
 
-float sdf_sphere(vec3 p, vec3 center, float rad) {
-    return length(center - p) - rad;
+const int   VIEW_SAMPLES  = 128; 
+const int   LIGHT_SAMPLES = 32;
+
+float phaseRayleigh(float cosT) {
+    return (3.0 / (16.0 * PI)) * (1.0 + cosT * cosT);
 }
 
-float smin(float a, float b, float k) {
-    k *= 6.0;
-    float h = max( k-abs(a-b), 0.0 )/k;
-    return min( a, b ) - h*h*h*k*(1.0/6.0);
+float phaseMie(float g, float cosT) {
+    float g2 = g * g;
+    float denom = 1.0 + g2 - 2.0 * g * cosT;
+    return (3.0 / (8.0 * PI)) * ((1.0 - g2) * (1.0 + cosT * cosT)) / ((2.0 + g2) * max(pow(denom, 1.5), 0.0001));
 }
 
-float map(vec3 p) {
-    float s1 = sdf_sphere(p, vec3(-0.5, 0.0, 2.0), 1.0);
-    float s2 = sdf_sphere(p, vec3(0.5, 0.0, 2.0), 1.0);
-    return smin(s1, s2, 0.05);
-}
-
-float sphere_trace(vec3 ro, vec3 rd, out vec3 pos) {
-    float t = 0.0;
-    vec3 p = ro;
-    for (int i = 0; i < 256; i++) {        
-        p = ro + t * rd;
-        pos = p;
-        float d = map(p);
-        if (d < 0.00001) {
-            return t;
-        }
-
-        if (t > 50.0) {
-            return -1.0;
-        }
-        
-        t += max(d, 0.001);
-    }
-
-    return -1.0;
-}
-
-vec3 integrate(vec3 ro, vec3 rd) {
-    vec3 bg_col = vec3(0, 0, 0);
-    vec3 pos;
-
-    if (sphere_trace(ro, rd, pos) < 0.0) { // check if we hit anything w/ sphere trace, store pos if we do
-        return bg_col;
-    }
-
-    float step_size = 0.005;
-    float sigma_a = 1.2;
-
-    vec3 light_pos = vec3(0, 5, 0);
-    vec3 light_color = vec3(1.0, 1.0, 1.0);
-    
-    float transparency = 1.0;
-    vec3 res = vec3(0.0, 0.0, 0.0);
-
-    for (int i = 0; i < 1000; i++) {
-        // length(pos) = distance from camera to hit, need to change if camera ever moves from 0,0,0
-        float t = length(pos) + (i + 0.5) * step_size;
-        vec3 curr_pos = ro + t * rd;
-
-        if (map(curr_pos) > 0.0) {
-            break;
-        }
-
-        float sample_attenuation = exp(-step_size * sigma_a);
-        transparency *= sample_attenuation;
-
-        vec3 curr_light_pos;
-        float l = sphere_trace(light_pos, normalize(curr_pos - light_pos), curr_light_pos);
-        if (l >= 0.0) {
-            float light_attenuation = exp(-length(curr_light_pos - curr_pos) * sigma_a);
-            res += transparency * light_color * light_attenuation * step_size;
-        }
-
-    }
-
-    return bg_col * transparency + res;
+bool intersectSphere(vec3 ro, vec3 rd, vec3 center, float radius, out float t0, out float t1) {
+    vec3 oc = ro - center;
+    float b = dot(rd, oc);
+    float c = dot(oc, oc) - radius * radius;
+    float disc = b * b - c;
+    if (disc < 0.0) return false;
+    float s = sqrt(disc);
+    t0 = -b - s;
+    t1 = -b + s;
+    return t1 >= 0.0;
 }
 
 void main() {
-    // Built-in pixel coordinates
-    vec2 fragCoord = gl_FragCoord.xy;
+    vec2 ndc = (gl_FragCoord.xy * 2.0 - u_resolution.xy) / u_resolution.y;
+    vec3 cameraRight = normalize(cross(u_cameraDir, u_cameraUp));
+    vec3 rayDir = normalize(u_cameraDir + ndc.x * u_tanHalfFov * cameraRight + ndc.y * u_tanHalfFov * u_cameraUp);
+    vec3 rayOrigin = u_cameraPos;
 
-    // Normalize coordinates from -1 to 1
-    vec2 uv = (fragCoord / iResolution) * 2.0 - 1.0;
+    vec3 sunDir = normalize(u_sunDir);
 
-    // Correct aspect ratio
-    uv.x *= iResolution.x / iResolution.y;
+    float tAtmNear, tAtmFar;
+    if (!intersectSphere(rayOrigin, rayDir, vec3(0.0), u_atmosphereRadius, tAtmNear, tAtmFar)) {
+        FragColor = vec4(0.0, 0.0, 0.0, 1.0); 
+        return;
+    }
+    if (tAtmNear < 0.0) tAtmNear = 0.0; 
 
-    vec3 ro = vec3(0.0, 0.0, 0.0);
-    vec3 rd = normalize(vec3(uv, 1.0));
+    float tGroundNear, tGroundFar;
+    bool hitGround = intersectSphere(rayOrigin, rayDir, vec3(0.0), u_planetRadius, tGroundNear, tGroundFar);
+    float tMax = hitGround && tGroundNear > 0.0 ? tGroundNear : tAtmFar;
 
+    float rayLength = tMax - tAtmNear;
+    float stepSize = rayLength / float(VIEW_SAMPLES);
 
-    vec3 color = integrate(ro, rd);
+    vec3 accumRayleigh = vec3(0.0);
+    vec3 accumMie = vec3(0.0);
+    float opticalDepthRayleigh = 0.0;
+    float opticalDepthMie = 0.0;
 
-    fragColor = vec4(color, 1.0);
+    float currentDist = tAtmNear;
+    for (int i = 0; i < VIEW_SAMPLES; i++) {
+        vec3 samplePos = rayOrigin + rayDir * (currentDist + stepSize * 0.5);
+        float height = length(samplePos) - u_planetRadius;
+        if (height < 0.0) height = 0.0;
+
+        float dzRayleigh = exp(-height / u_rayleighScaleHeight) * stepSize;
+        float dzMie = exp(-height / u_mieScaleHeight) * stepSize;
+
+        opticalDepthRayleigh += dzRayleigh;
+        opticalDepthMie += dzMie;
+
+        float tSunNear, tSunFar;
+        float tGroundSunNear, tGroundSunFar;
+        bool blockedByPlanet = intersectSphere(samplePos, sunDir, vec3(0.0), u_planetRadius, tGroundSunNear, tGroundSunFar);
+        if (!blockedByPlanet && intersectSphere(samplePos, sunDir, vec3(0.0), u_atmosphereRadius, tSunNear, tSunFar)) {
+            float sunStepSize = tSunFar / float(LIGHT_SAMPLES);
+            float lightDepthRayleigh = 0.0;
+            float lightDepthMie = 0.0;
+
+            for (int j = 0; j < LIGHT_SAMPLES; j++) {
+                vec3 lightPos = samplePos + sunDir * (float(j) + 0.5) * sunStepSize;
+                float lightHeight = length(lightPos) - u_planetRadius;
+                if (lightHeight > 0.0) {
+                    lightDepthRayleigh += exp(-lightHeight / u_rayleighScaleHeight) * sunStepSize;
+                    lightDepthMie += exp(-lightHeight / u_mieScaleHeight) * sunStepSize;
+                }
+            }
+
+            vec3 tau = u_betaRayleigh * (opticalDepthRayleigh + lightDepthRayleigh) + 
+                       u_betaMie * 1.1 * (opticalDepthMie + lightDepthMie);
+            vec3 attenuation = exp(-tau);
+
+            accumRayleigh += dzRayleigh * attenuation;
+            accumMie += dzMie * attenuation;
+        }
+
+        currentDist += stepSize;
+    }
+
+    float cosTheta = dot(rayDir, sunDir);
+    float phaseR = phaseRayleigh(cosTheta);
+    float phaseM = phaseMie(u_mieG, cosTheta);
+
+    vec3 color = u_sunIntensity * u_sunColor * (accumRayleigh * u_betaRayleigh * phaseR + accumMie * u_betaMie * phaseM);
+
+    color = vec3(1.0) - exp(-color * u_exposure);
+    color = pow(clamp(color, 0.0, 1.0), vec3(1.0 / 2.2)); 
+
+    FragColor = vec4(color, 1.0);
 }
