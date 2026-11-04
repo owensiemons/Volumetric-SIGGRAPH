@@ -65,6 +65,7 @@ int main() {
     // == INIT DATA ==
 
     int resLoc = glGetUniformLocation(shaderProgram, "iResolution");
+    int frameLoc = glGetUniformLocation(shaderProgram, "frame");
 
     float vertices[] = { // Screen space quad
          1.0f,  1.0f, 0.0f,
@@ -97,6 +98,8 @@ int main() {
 
     glBindVertexArray(0);
 
+    int frame = 0;
+
     // == RENDER LOOP ==
     while (!glfwWindowShouldClose(window)) {
         glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
@@ -108,6 +111,7 @@ int main() {
         int fbW, fbH;
         glfwGetFramebufferSize(window, &fbW, &fbH);
         glUniform2f(resLoc, (float)fbW, (float)fbH);
+        glUniform1i(frameLoc, frame);
 
         glBindVertexArray(VAO);
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
@@ -115,6 +119,8 @@ int main() {
         glfwSwapBuffers(window);
         glfwPollEvents();
         process_input(window);
+
+        frame++;
     }
     glfwTerminate();
 }
