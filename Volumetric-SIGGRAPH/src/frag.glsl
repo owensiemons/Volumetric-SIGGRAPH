@@ -61,9 +61,8 @@ float sphere_trace(vec3 ro, vec3 rd, out vec3 pos) {
     return -1.0;
 }
 
-vec3 boundary_radiance(vec3 x_s, vec3 rd) { // Claude generated
-    float t = 0.5 * (rd.y + 1.0);                  // 0 looking straight down, 1 straight up
-    return mix(vec3(1.0), vec3(0.3, 0.5, 1.0), t); // white at the bottom, blue at the top
+vec3 boundary_radiance(vec3 x_s, vec3 rd) {
+    return mix(vec3(1.0), vec3(0.3, 0.5, 1.0), (rd.y + 1.0) / 2.0);
 }
 
 // coeffecients
@@ -92,7 +91,7 @@ void basis(vec3 n, out vec3 t, out vec3 b) { // Claude generated
     b = vec3(c, s + n.y * n.y * a, -n.y);
 }
 
-vec3 sample_HG_phase(vec3 dir, float g, inout uint rng) { // Claude generated
+vec3 sample_HG_phase(vec3 dir, float g, inout uint rng) { // Claude generated, this is inversion sampling
     float u1 = rand(rng);
     float u2 = rand(rng);
 
@@ -110,11 +109,10 @@ vec3 sample_HG_phase(vec3 dir, float g, inout uint rng) { // Claude generated
     vec3 t, b;
     basis(dir, t, b);
     return sin_theta * cos(phi) * t + sin_theta * sin(phi) * b + cos_theta * dir;
-}
+} 
 
 
 vec3 emitted_radiance(vec3 y, vec3 rd) {
-
     return vec3(0.0);
 }
 
@@ -128,14 +126,20 @@ vec3 radiance(vec3 ro, vec3 rd, inout uint rng) {
     }
 
     vec3 col = vec3(0.0);
+    // instead of recursion on radiance(), we use a loop approach with throughput storing the weights so far
+    // basically we always mult the next radiance() call by  mu_s(y) / mu_t(y) so we store those and use them at the end
     vec3 throughput = vec3(1.0);
 
-    for (int i = 0; i < 10; i++) {
+    // to avoid stalling thread groups and the like we have a max depth, even though russian roulette early exits
+    for (int depth = 0; depth < 1000; depth++) {
         sphere_trace(x + 32.0 * rd, -rd, x_s); // hacky way of finding x_s
 
         float tau_max = length(x - x_s);
     
-        // find tau
+        // tau is our free flight distance, ie how far we travel before an interaction
+        // we find it by inversion sampling the PDF p_lambda
+        // which is just the integral of our mu_t over the total path
+        // we currently solve this with ray marching (riemman sum), delta tracking is better
         float target = -log(1.0 - rand(rng));
         float opt_depth = 0.0;
         float tau = 0.0;
@@ -146,21 +150,42 @@ vec3 radiance(vec3 ro, vec3 rd, inout uint rng) {
                 break;
             }
             tau += 0.01; // dt = 0.01
-        }
+        } // additionally, we are basically calculating transmittance(x, x_s) here
 
-        if (tau >= tau_max) {
+        if (tau >= tau_max) { // No interaction during the whole distance, return just boundary rad
             col += throughput * boundary_radiance(x_s, rd);
             break;
-        } // No interaction during the whole distance, return just boundary rad
+        }
 
         vec3 y = x + tau * rd; // interaction point
 
         col += throughput * mu_a(y) / mu_t(y) * emitted_radiance(y, rd);
         throughput *= mu_s(y) / mu_t(y);
 
+        // here we do russian roulette with p = max(throughput)
+        // this is because we dont want to skip paths with high "energy"
+        // same reason we only do RR with depth > 3
+        float p = max(throughput.x, max(throughput.y, throughput.z));
+        if (depth > 3) {
+            if (rand(rng) > p) {
+                break;
+            } else {
+                throughput /= p;
+            }
+        }
+
+        // our path survived, now we move on to the next integral
+        // since we sample the phase function for the next rd, we cancel out the phase term
+        // aka L_ins = int(L(y, rd_new) * phase) -> pdf has phase -> int(L(y, rd_new) * phase / phase)
+
         rd = sample_HG_phase(rd, 0.6, rng);
         x = y;
     }
+
+    // you may have noticed that theres no computation of transmittance between x and y
+    // and we divide by mu_t a few times
+    // this is because our PDF for the full equation is mu_t * transmittance(x, y)
+    // which we divide the integrand by
 
     return col;
 
