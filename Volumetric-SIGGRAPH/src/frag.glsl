@@ -6,6 +6,15 @@ out vec4 fragColor;
 uniform vec2 iResolution;
 uniform int frame;
 
+const vec3 SUN_POS = vec3(2.0, 1.5, 2.0);
+const float SUN_RADIUS = 0.2;
+const vec3 SUN_RADIANCE = vec3(500.0);
+const float HG_G = 0.1;
+const float dt = 0.01;
+const int NUM_SAMPLES = 100;
+const float SIGMA_S = 0.8;
+const float SIGMA_A = 0.4;
+
 // RNG stuff
 uint pcg_hash(uint v) {
     uint state = v * 747796405u + 2891336453u;
@@ -61,26 +70,26 @@ float sphere_trace(vec3 ro, vec3 rd, out vec3 pos) {
     return -1.0;
 }
 
-vec3 boundary_radiance(vec3 x_s, vec3 rd) {
-    return mix(vec3(1.0), vec3(0.3, 0.5, 1.0), (rd.y + 1.0) / 2.0);
-}
-
 // coeffecients
 
 float mu_s(vec3 pos) {
-    return 0.8;
+    if (map(pos) < 0.0) return SIGMA_S;
+    return 0.0;
 }
 
 float mu_a(vec3 pos) {
-    return 0.8;
+    if (map(pos) < 0.0) return SIGMA_A;
+    return 0.0;
 }
 
 float mu_t(vec3 pos) {
-    return mu_s(pos) + mu_a(pos);
+    if (map(pos) < 0.0) return SIGMA_A + SIGMA_S;
+    return 0.0;
 }
 
-float HG_phase(float g, float theta) {
-    return (1.0 - g * g) / (4.0 * PI * pow(1.0 + g * g - 2.0 * g * cos(theta), 3.0/2.0));
+float HG_phase(float g, float cos_t) {
+    float denom = 1.0 + g * g - 2.0 * g * cos_t;
+    return (1.0 - g * g) / (4.0 * PI * denom * sqrt(denom));
 }
 
 void basis(vec3 n, out vec3 t, out vec3 b) { // Claude generated
@@ -109,20 +118,68 @@ vec3 sample_HG_phase(vec3 dir, float g, inout uint rng) { // Claude generated, t
     vec3 t, b;
     basis(dir, t, b);
     return sin_theta * cos(phi) * t + sin_theta * sin(phi) * b + cos_theta * dir;
-} 
+}
+
+vec3 sample_sun_cone(vec3 y, vec3 center, float rad, out float pdf, inout uint rng) { // Claude generated
+    vec3 to_c = center - y;
+    float d2 = dot(to_c, to_c);
+    vec3 w = to_c * inversesqrt(d2);
+
+    float sin2_max = rad * rad / d2;
+    float cos_max = sqrt(max(0.0, 1.0 - sin2_max));
+    float one_minus_cos = sin2_max / (1.0 + cos_max);
+
+    float cos_t = 1.0 - rand(rng) * one_minus_cos;
+    float sin_t = sqrt(max(0.0, 1.0 - cos_t * cos_t));
+    float phi = 2.0 * PI * rand(rng);
+
+    vec3 t, b;
+    basis(w, t, b);
+    pdf = 1.0 / (2.0 * PI * one_minus_cos);
+    return sin_t * cos(phi) * t + sin_t * sin(phi) * b + cos_t * w;
+}
+
+// riemman sum / raymarch
+float transmittance(vec3 x, vec3 y) {
+    vec3 d = y - x;
+    float len = length(d);
+    if (len < 1e-6) return 1.0;
+    vec3 dir = d / len;
+
+    float optical_depth = 0.0;
+
+    for (float s = 0.0; s < len; s += dt) {
+        float h = min(dt, len - s);
+        optical_depth += mu_t(x + (s + 0.5 * h) * dir) * h;
+    }
+
+    return exp(-optical_depth);
+}
+
+vec3 boundary_radiance(vec3 x_s, vec3 rd, bool first) {
+    if (first) {// check if we intersect the sun
+        vec3 oc = x_s - SUN_POS;
+        float b = dot(oc, rd);
+        float c = dot(oc, oc) - SUN_RADIUS * SUN_RADIUS;
+        if (c > 0.0 && b < 0.0 && b * b - c > 0.0) return SUN_RADIANCE;
+    }
+
+    // add in atmosphere stuff here
+    return vec3(0.0);
+    //return mix(vec3(1.0), vec3(0.3, 0.5, 1.0), (rd.y + 1.0) / 2.0);
+}
 
 
 vec3 emitted_radiance(vec3 y, vec3 rd) {
     return vec3(0.0);
 }
 
-
 vec3 radiance(vec3 ro, vec3 rd, inout uint rng) {
     vec3 x = vec3(-1.0); // entry position
     vec3 x_s = vec3(-1.0); // boundary position
 
-    if (sphere_trace(ro, rd, x) < 1.0) {
-        return boundary_radiance(ro, rd);
+    if (sphere_trace(ro, rd, x) < 0.0) {
+        return boundary_radiance(ro, rd, true);
     }
 
     vec3 col = vec3(0.0);
@@ -133,6 +190,8 @@ vec3 radiance(vec3 ro, vec3 rd, inout uint rng) {
     // to avoid stalling thread groups and the like we have a max depth, even though russian roulette early exits
     for (int depth = 0; depth < 1000; depth++) {
         sphere_trace(x + 32.0 * rd, -rd, x_s); // hacky way of finding x_s
+
+        // == free flight stuff ==
 
         float tau_max = length(x - x_s);
     
@@ -145,22 +204,43 @@ vec3 radiance(vec3 ro, vec3 rd, inout uint rng) {
         float tau = 0.0;
 
         while (tau < tau_max) {
-            opt_depth += mu_t(x + tau * rd) * 0.01;
-            if (opt_depth >= target) {
+            opt_depth += mu_t(x + tau * rd) * dt;
+            if (opt_depth > target) {
                 break;
             }
-            tau += 0.01; // dt = 0.01
+            tau += dt;
         } // additionally, we are basically calculating transmittance(x, x_s) here
 
         if (tau >= tau_max) { // No interaction during the whole distance, return just boundary rad
-            col += throughput * boundary_radiance(x_s, rd);
+            // we dont add sunlight after first depth because we are already doing that with NEE
+            col += throughput * boundary_radiance(x_s, rd, depth == 0);
             break;
         }
 
         vec3 y = x + tau * rd; // interaction point
 
+        // add in emitted radiance
         col += throughput * mu_a(y) / mu_t(y) * emitted_radiance(y, rd);
+        // update throughput for scattering
         throughput *= mu_s(y) / mu_t(y);
+
+
+        // == Next Event Estimation Stuff ==
+
+        // the PDF for sampling on the sun (direct pdf)
+        float dpdf = -1.0;
+        // random point facing us on sun
+        vec3 w_i = sample_sun_cone(y, SUN_POS, SUN_RADIUS, dpdf, rng);
+
+        vec3 y_exit;
+        sphere_trace(y + 32.0 * w_i, -w_i, y_exit);
+        // transmittance from current pos to edge of cloud towards sun
+        float T_cloud = transmittance(y, y_exit);
+        // transmittance from edge of cloud to edge of atmosphere towards sun (temp)
+        float T_atmos = 1.0;
+        // with NEE we directly find the incoming light instead of waiting to randomly sample it
+        col += throughput * SUN_RADIANCE * HG_phase(HG_G, dot(rd, w_i)) * T_cloud * T_atmos / dpdf;
+
 
         // here we do russian roulette with p = max(throughput)
         // this is because we dont want to skip paths with high "energy"
@@ -178,7 +258,7 @@ vec3 radiance(vec3 ro, vec3 rd, inout uint rng) {
         // since we sample the phase function for the next rd, we cancel out the phase term
         // aka L_ins = int(L(y, rd_new) * phase) -> pdf has phase -> int(L(y, rd_new) * phase / phase)
 
-        rd = sample_HG_phase(rd, 0.6, rng);
+        rd = sample_HG_phase(rd, HG_G, rng);
         x = y;
     }
 
@@ -188,7 +268,6 @@ vec3 radiance(vec3 ro, vec3 rd, inout uint rng) {
     // which we divide the integrand by
 
     return col;
-
 }
 
 void main() {
@@ -203,14 +282,15 @@ void main() {
 
     uint rng = init_rng(uvec2(fragCoord), uint(frame), uint(iResolution.x));
 
-    vec3 ro = vec3(0.0, 0.0, 0.0);
-    vec3 rd = normalize(vec3(uv, 1.0));
+    vec3 ro = vec3(0.0, 0.0, -1.8);
+    const float FOV = radians(50.0);
+    vec3 rd = normalize(vec3(uv * tan(0.5 * FOV), 1.0));
 
     vec3 sum = vec3(0.0);
-    for (int i = 0; i < 100; i++) {
+    for (int i = 0; i < NUM_SAMPLES; i++) {
         sum += radiance(ro, rd, rng);
     }
-    sum /= float(100);
+    sum /= float(NUM_SAMPLES);
 
     fragColor = vec4(sum, 1.0);
 }
