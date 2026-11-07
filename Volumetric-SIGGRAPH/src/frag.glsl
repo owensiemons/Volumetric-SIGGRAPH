@@ -6,14 +6,14 @@ out vec4 fragColor;
 uniform vec2 iResolution;
 uniform int frame;
 
-const vec3 SUN_POS = vec3(2.0, 1.5, 2.0);
-const float SUN_RADIUS = 0.2;
-const vec3 SUN_RADIANCE = vec3(500.0);
+const vec3 SUN_POS = vec3(13.0, 8.0, 20.0);
+const float SUN_RADIUS = 0.3;
+const vec3 SUN_IRRADIANCE = vec3(5.0);
 const float HG_G = 0.1;
 const float dt = 0.01;
 const int NUM_SAMPLES = 100;
-const float SIGMA_S = 0.8;
-const float SIGMA_A = 0.4;
+const float SIGMA_S = 0.7;
+const float SIGMA_A = 0.1;
 
 // RNG stuff
 uint pcg_hash(uint v) {
@@ -120,23 +120,8 @@ vec3 sample_HG_phase(vec3 dir, float g, inout uint rng) { // Claude generated, t
     return sin_theta * cos(phi) * t + sin_theta * sin(phi) * b + cos_theta * dir;
 }
 
-vec3 sample_sun_cone(vec3 y, vec3 center, float rad, out float pdf, inout uint rng) { // Claude generated
-    vec3 to_c = center - y;
-    float d2 = dot(to_c, to_c);
-    vec3 w = to_c * inversesqrt(d2);
-
-    float sin2_max = rad * rad / d2;
-    float cos_max = sqrt(max(0.0, 1.0 - sin2_max));
-    float one_minus_cos = sin2_max / (1.0 + cos_max);
-
-    float cos_t = 1.0 - rand(rng) * one_minus_cos;
-    float sin_t = sqrt(max(0.0, 1.0 - cos_t * cos_t));
-    float phi = 2.0 * PI * rand(rng);
-
-    vec3 t, b;
-    basis(w, t, b);
-    pdf = 1.0 / (2.0 * PI * one_minus_cos);
-    return sin_t * cos(phi) * t + sin_t * sin(phi) * b + cos_t * w;
+float find_mu_bar() {
+    return SIGMA_A + SIGMA_S;
 }
 
 // riemman sum / raymarch
@@ -161,12 +146,12 @@ vec3 boundary_radiance(vec3 x_s, vec3 rd, bool first) {
         vec3 oc = x_s - SUN_POS;
         float b = dot(oc, rd);
         float c = dot(oc, oc) - SUN_RADIUS * SUN_RADIUS;
-        if (c > 0.0 && b < 0.0 && b * b - c > 0.0) return SUN_RADIANCE;
+        if (c > 0.0 && b < 0.0 && b * b - c > 0.0) return SUN_IRRADIANCE;
     }
 
     // add in atmosphere stuff here
-    return vec3(0.0);
-    //return mix(vec3(1.0), vec3(0.3, 0.5, 1.0), (rd.y + 1.0) / 2.0);
+    //return vec3(0.0);
+    return mix(vec3(1.0), vec3(0.3, 0.5, 1.0), (rd.y + 1.0) / 2.0);
 }
 
 
@@ -188,33 +173,36 @@ vec3 radiance(vec3 ro, vec3 rd, inout uint rng) {
     vec3 throughput = vec3(1.0);
 
     // to avoid stalling thread groups and the like we have a max depth, even though russian roulette early exits
-    for (int depth = 0; depth < 1000; depth++) {
+    for (int depth = 0; depth < 4096; depth++) {
         sphere_trace(x + 32.0 * rd, -rd, x_s); // hacky way of finding x_s
 
-        // == free flight stuff ==
-
-        float tau_max = length(x - x_s);
     
         // tau is our free flight distance, ie how far we travel before an interaction
-        // we find it by inversion sampling the PDF p_lambda
-        // which is just the integral of our mu_t over the total path
-        // we currently solve this with ray marching (riemman sum), delta tracking is better
-        float target = -log(1.0 - rand(rng));
-        float opt_depth = 0.0;
+        // tau max is the maximum distance we can travel while still being in the volume
+        float tau_max = length(x - x_s);
+        
+        // == delta tracking ==
+        // with a constant density volume, finding tau is easy
+        // but we need to numerically integrate for non-constant density. 
+        // so we pretend we have constant density mu_bar > mu_t(x) for all x
+        // but thats innacurate, so we randomly discard some of our collisions using
+        // the difference in rates between mu_t and mu_bar, which gives us accurate results
         float tau = 0.0;
+        float mu_bar = find_mu_bar();
+        bool collided = false;
 
-        while (tau < tau_max) {
-            opt_depth += mu_t(x + tau * rd) * dt;
-            if (opt_depth > target) {
+        for (int i = 0; i < 4096; i++) { // again, max depth just in case
+            tau -= log(1.0 - rand(rng)) / mu_bar;
+            if (tau >= tau_max) break;
+            if (rand(rng) < mu_t(x + tau * rd) / mu_bar) {
+                collided = true;
                 break;
             }
-            tau += dt;
-        } // additionally, we are basically calculating transmittance(x, x_s) here
+        }
 
-        if (tau >= tau_max) { // No interaction during the whole distance, return just boundary rad
-            // we dont add sunlight after first depth because we are already doing that with NEE
+        if (!collided) {// No interaction during the whole distance, return just boundary rad
             col += throughput * boundary_radiance(x_s, rd, depth == 0);
-            break;
+            break; // we dont add sunlight after first depth because we are already doing that with NEE
         }
 
         vec3 y = x + tau * rd; // interaction point
@@ -225,12 +213,10 @@ vec3 radiance(vec3 ro, vec3 rd, inout uint rng) {
         throughput *= mu_s(y) / mu_t(y);
 
 
-        // == Next Event Estimation Stuff ==
+        // == Next Event Estimation ==
 
-        // the PDF for sampling on the sun (direct pdf)
-        float dpdf = -1.0;
-        // random point facing us on sun
-        vec3 w_i = sample_sun_cone(y, SUN_POS, SUN_RADIUS, dpdf, rng);
+        // We treat the sun as a directional light here as it should be basically infinitely far
+        vec3 w_i = normalize(SUN_POS);
 
         vec3 y_exit;
         sphere_trace(y + 32.0 * w_i, -w_i, y_exit);
@@ -239,13 +225,13 @@ vec3 radiance(vec3 ro, vec3 rd, inout uint rng) {
         // transmittance from edge of cloud to edge of atmosphere towards sun (temp)
         float T_atmos = 1.0;
         // with NEE we directly find the incoming light instead of waiting to randomly sample it
-        col += throughput * SUN_RADIANCE * HG_phase(HG_G, dot(rd, w_i)) * T_cloud * T_atmos / dpdf;
+        col += throughput * SUN_IRRADIANCE * HG_phase(HG_G, dot(rd, w_i)) * T_cloud * T_atmos;
 
 
         // here we do russian roulette with p = max(throughput)
         // this is because we dont want to skip paths with high "energy"
         // same reason we only do RR with depth > 3
-        float p = max(throughput.x, max(throughput.y, throughput.z));
+        float p = clamp(max(throughput.x, max(throughput.y, throughput.z)), 0.1, 1.0);
         if (depth > 3) {
             if (rand(rng) > p) {
                 break;
