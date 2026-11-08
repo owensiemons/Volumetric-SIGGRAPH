@@ -1,7 +1,10 @@
 #version 330 core
-out vec4 FragColor;
+#define PI 3.14159265359
 
-uniform vec2 u_resolution;
+out vec4 fragColor;
+
+uniform vec2 iResolution;
+uniform int frame;
 
 const vec3  CAMERA_DIR           = vec3(0.0, 0.5, -1.0);
 const vec3  CAMERA_UP            = vec3(0.0, 1.0, 0.0);
@@ -26,8 +29,6 @@ const float MIE_EXTINCTION_SCALE  = 1.1;
 const vec3  GROUND_ALBEDO         = vec3(0.20, 0.18, 0.15);
 
 const float EXPOSURE              = 1.5;
-
-#define PI 3.14159265359
 
 const int VIEW_SAMPLES   = 12;
 const int LIGHT_SAMPLES  = 6;
@@ -142,7 +143,7 @@ void main() {
     vec3 camR = normalize(cross(CAMERA_DIR, CAMERA_UP));
     vec3 camU = cross(camR, CAMERA_DIR);
 
-    vec2 ndc = (gl_FragCoord.xy * 2.0 - u_resolution.xy) / u_resolution.y;
+    vec2 ndc = (gl_FragCoord.xy * 2.0 - iResolution.xy) / iResolution.y;
     vec3 rd = normalize(CAMERA_DIR + ndc.x * TAN_HALF_FOV * camR + ndc.y * TAN_HALF_FOV * camU);
     vec3 ro = vec3(0.0);
 
@@ -153,7 +154,7 @@ void main() {
 
     float tAtm0, tAtm1;
     if (!intersectSphere(ro, rd, PLANET_CENTER, ATMOSPHERE_RADIUS, tAtm0, tAtm1)) {
-        FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        fragColor = vec4(0.0, 0.0, 0.0, 1.0);
         return;
     }
     tAtm0 = max(tAtm0, 0.0);
@@ -274,5 +275,5 @@ void main() {
     mapped = 1.0 - exp(-max(mapped, vec3(0.0)));
     mapped = pow(clamp(mapped, 0.0, 1.0), vec3(1.0 / 2.2));
 
-    FragColor = vec4(mapped, 1.0);
+    fragColor = vec4(mapped, 1.0);
 }
