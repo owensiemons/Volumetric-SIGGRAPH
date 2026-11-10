@@ -378,4 +378,6 @@ render_output.ppm
 
 *.DS_Store
 
+.commandcode/
+
 

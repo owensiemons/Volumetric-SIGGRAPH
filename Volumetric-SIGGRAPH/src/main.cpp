@@ -5,10 +5,25 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void process_input(GLFWwindow* window);
 void init_shaders(unsigned int vert_shader, unsigned int frag_shader, unsigned int shader_program, const char* vert_src, const char* frag_src);
+
+const bool kIsOffline = true; 
+const std::string kOutputFilename = "render_output.ppm";
+const int kOfflineSamples = 4;
+
+void saveFrameToImage(const std::string& filename, int width, int height, const std::vector<unsigned char>& pixels) {
+    std::ofstream file(filename, std::ios::binary);
+    file << "P6\n" << width << " " << height << "\n255\n";
+    for (int y = height - 1; y >= 0; --y) {
+        file.write(reinterpret_cast<const char*>(&pixels[y * width * 3]), width * 3);
+    }
+    file.close();
+    std::cout << "[Offline] Completed: " << filename << std::endl;
+}
 
 int main() {
     if (!glfwInit()) return -1;
@@ -17,9 +32,10 @@ int main() {
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 
-    GLFWwindow* window = glfwCreateWindow(1600, 1200, "OpenGL Setup", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(800, 600, "OpenGL Setup", nullptr, nullptr);
     if (!window) { glfwTerminate(); return -1; }
     glfwMakeContextCurrent(window);
+    glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
 
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
         std::cout << "Failed to init GLAD\n";
@@ -56,6 +72,7 @@ int main() {
         catch (std::ifstream::failure& e)
         {
             std::cout << "ERROR::SHADER::FILE_NOT_SUCCESSFULLY_READ: " << e.what() << std::endl;
+            return -1;
         }
     }
 
@@ -103,7 +120,49 @@ int main() {
 
     int frame = 0;
 
+
     // == RENDER LOOP ==
+    if (kIsOffline) {
+        std::cout << "[Mode]Offline\n";
+
+        glfwWindowHint(GLFW_VISIBLE, GL_FALSE);
+
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+
+        glUseProgram(shaderProgram);
+
+        int fbW, fbH;
+        glfwGetFramebufferSize(window, &fbW, &fbH);
+
+        glUniform2f(resLoc, (float)fbW, (float)fbH);
+
+        glBindVertexArray(VAO);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+
+        // accumulate frames
+        std::vector<unsigned int> accum(fbW * fbH * 3, 0u);
+        std::vector<unsigned char> pixels(fbW * fbH * 3);
+        for (int i = 0; i < kOfflineSamples; i++) {
+            glClear(GL_COLOR_BUFFER_BIT);
+            glUniform1i(frameLoc, i);
+            glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+            glReadPixels(0, 0, fbW, fbH, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
+            for (size_t j = 0; j < accum.size(); j++) {
+                accum[j] += pixels[j];
+            }
+            std::cout << "[Mode]Offline " << i << "/" << kOfflineSamples << "\n";
+        }
+        for (size_t j = 0; j < accum.size(); j++) {
+            pixels[j] = (unsigned char)(accum[j] / kOfflineSamples);
+        }
+
+        saveFrameToImage(kOutputFilename, fbW, fbH, pixels);
+
+        glfwTerminate();
+        return 0;
+    }
+
+    std::cout << "[Mode]Realtime\n";
     while (!glfwWindowShouldClose(window)) {
         glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
