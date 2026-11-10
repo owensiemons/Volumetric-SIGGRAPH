@@ -367,3 +367,17 @@ FodyWeavers.xsd
 vcpkg_installed/
 
 Volumetric-SIGGRAPH.vcxproj
+
+build/
+
+.vscode/
+
+CMakeLists.txt
+
+render_output.ppm
+
+*.DS_Store
+
+.commandcode/
+
+
