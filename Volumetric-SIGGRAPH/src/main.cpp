@@ -13,7 +13,7 @@ void init_shaders(unsigned int vert_shader, unsigned int frag_shader, unsigned i
 
 const bool kIsOffline = true; 
 const std::string kOutputFilename = "render_output.ppm";
-const int kOfflineSamples = 4;
+const int kOfflineSamples = 1;
 
 void saveFrameToImage(const std::string& filename, int width, int height, const std::vector<unsigned char>& pixels) {
     std::ofstream file(filename, std::ios::binary);
@@ -32,6 +32,7 @@ int main() {
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 
+    if (kIsOffline) glfwWindowHint(GLFW_VISIBLE, GL_FALSE);
     GLFWwindow* window = glfwCreateWindow(800, 600, "OpenGL Setup", nullptr, nullptr);
     if (!window) { glfwTerminate(); return -1; }
     glfwMakeContextCurrent(window);
@@ -125,16 +126,21 @@ int main() {
     if (kIsOffline) {
         std::cout << "[Mode]Offline\n";
 
-        glfwWindowHint(GLFW_VISIBLE, GL_FALSE);
-
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 
         glUseProgram(shaderProgram);
 
         int fbW, fbH;
         glfwGetFramebufferSize(window, &fbW, &fbH);
-
+        glViewport(0, 0, fbW, fbH);
         glUniform2f(resLoc, (float)fbW, (float)fbH);
+        glUniform1i(frameLoc, frame);
+
+        //example of how to set the camera position
+        float cameraPos[3] = { 0.0f, 0.0f, 0.0f };
+
+        //input parameter
+        glUniform3fv(glGetUniformLocation(shaderProgram, "CAMERA_POS"), 1, cameraPos);
 
         glBindVertexArray(VAO);
         glPixelStorei(GL_PACK_ALIGNMENT, 1);
@@ -171,9 +177,13 @@ int main() {
 
         int fbW, fbH;
         glfwGetFramebufferSize(window, &fbW, &fbH);
-
+        glViewport(0, 0, fbW, fbH);
         glUniform2f(resLoc, (float)fbW, (float)fbH);
         glUniform1i(frameLoc, frame);
+
+        float cameraPos[3] = { 0.0f, 0.0f, 0.0f };
+
+        glUniform3fv(glGetUniformLocation(shaderProgram, "CAMERA_POS"), 1, cameraPos);
 
         glBindVertexArray(VAO);
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
