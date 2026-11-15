@@ -10,13 +10,12 @@ uniform int frame;
 uniform vec3 CAMERA_POS;
 const vec3  CAMERA_DIR           = vec3(0.0, 0.5, -1.0); // Camera direction
 const vec3  CAMERA_UP            = vec3(0.0, 1.0, 0.0); // Up direction
-const float TAN_HALF_FOV         = 0.57735026918962576; // tan(30°), half of the fov
+const float TAN_HALF_FOV         = 1.73; // tan(60°) = 1.732051, FOV = 120°, tan(30°) = 0.577350, FOV = 60°, half of the fov
 
 //Post Process
 const float EXPOSURE              = 2.3;
 
 //Solar Parameters
-const vec3  SUN_DIR              = vec3(0.2, 0.01, -0.9); // 
 const vec3  SUN_COLOR            = vec3(1.0, 1.0, 1.0);
 const vec3  SUN_INTENSITY        = vec3(12.0);   // irradiance
 const float SUN_ANGULAR_RADIUS   = 0.01465;      // angular radius of the disk
@@ -51,6 +50,57 @@ const int CLOUD_SAMPLES   = 36;
 const int LIGHT_SAMPLES  = 4;
 const int MS_STEPS       = 3;
 const int MS_INTEGRATION = 3;
+
+//SPA calculation
+vec3 SunDirection(float hour, float minute, float second) {
+    const float DEG2RAD = 0.017453292519943295;
+
+    const float LAT_RAD = 40.1053889 * DEG2RAD;
+    const float SIN_LAT = 0.6441957;
+    const float COS_LAT = 0.7648607;
+    const float LON_DEG = -88.2261389;
+
+    const float U_LAT   = atan(0.99664719 * tan(LAT_RAD));
+    const float Y_PAR   = 0.99664719 * sin(U_LAT);
+    const float X_PAR   = cos(U_LAT);
+
+    float dayFrac = ((hour + 5) + (minute + second / 60.0) / 60.0) / 24.0;
+    float d = 9761.5 + dayFrac;
+
+    float alphaDeg = 179.9885 + 0.8986 * dayFrac;
+    float deltaRad = (0.0050 - 0.3895 * dayFrac) * DEG2RAD;
+
+    const float SIN_XI = 4.2489e-5;
+
+    float nuDeg = mod(1.6227 + 360.98564737 * dayFrac, 360.0);
+    float hRad  = radians(mod(nuDeg + LON_DEG - alphaDeg + 720.0, 360.0));
+
+    float sinH = sin(hRad);
+    float cosH = cos(hRad);
+    float sinD = sin(deltaRad);
+    float cosD = cos(deltaRad);
+
+    float denom = cosD - X_PAR * SIN_XI * cosH;
+    float deltaAlphaRad = atan(-X_PAR * SIN_XI * sinH, denom);
+    float deltaPrimeRad = atan((sinD - Y_PAR * SIN_XI) * cos(deltaAlphaRad), denom);
+    float hPrimeRad     = hRad - deltaAlphaRad;
+
+    float sinElev = SIN_LAT * sin(deltaPrimeRad) + COS_LAT * cos(deltaPrimeRad) * cos(hPrimeRad);
+    float elevRad = asin(clamp(sinElev, -1.0, 1.0));
+    float zenithRad = (PI * 0.5) - elevRad;
+
+    float azmAstroRad = atan(
+        sin(hPrimeRad),
+        cos(hPrimeRad) * SIN_LAT - tan(deltaPrimeRad) * COS_LAT
+    );
+    float azimuthRad = azmAstroRad + PI;
+
+    return normalize(vec3(
+        sin(zenithRad) * cos(azimuthRad),
+        cos(zenithRad),
+        - sin(zenithRad) * sin(azimuthRad)
+    ));
+}
 
 
 // RNG stuff
@@ -251,7 +301,7 @@ bool cloudInterval(vec3 ro, vec3 rd, out float t0, out float t1) {
     return t1 > t0;
 }
 
-vec3 radiance(vec3 x, vec3 rd, inout uint rng) {
+vec3 radiance(vec3 x, vec3 rd, vec3 w_i, inout uint rng) {
     vec3 col = vec3(0.0);
     // instead of recursion on radiance(), we use a loop approach with throughput storing the weights so far
     // basically we always mult the next radiance() call by  mu_s(y) / mu_t(y) so we store those and use them at the end
@@ -301,12 +351,6 @@ vec3 radiance(vec3 x, vec3 rd, inout uint rng) {
         // update throughput for scattering
         throughput *= (sdf_y < 0.0 ? SIGMA_S : 0.0) / max(sigma_t, 1e-6);
 
-
-        // == Next Event Estimation ==
-
-        // We treat the sun as a directional light here as it should be basically infinitely far
-        vec3 w_i = normalize(SUN_DIR);
-
         // exit point of the cloud along the sun direction, found analytically
         float ts0, ts1;
         vec3 y_exit = y;
@@ -354,7 +398,7 @@ vec3 radiance(vec3 x, vec3 rd, inout uint rng) {
     return col;
 }
 
-vec3 multiScatterApprox(vec3 p, float h) {
+vec3 multiScatterApprox(vec3 p, float h, vec3 sunDir) {
     if (h <= 0.0) return vec3(0.0);
     vec3 up = normalize(p - PLANET_CENTER);
     float tU0, tU1;
@@ -362,7 +406,6 @@ vec3 multiScatterApprox(vec3 p, float h) {
     float uLen = max(tU1, 0.0);
     if (uLen <= 1e-4) return vec3(0.0);
 
-    vec3 sunDir = normalize(SUN_DIR);
     vec3 L = vec3(0.0);
 
     for (int k = 0; k < MS_STEPS; k++) {
@@ -427,6 +470,7 @@ bool intersectScene(vec3 ro, vec3 rd,
 
 
 void traceAtmosphere(vec3 ro, vec3 rd,
+                     vec3 sunDir,
                      float tMin, float tMax,
                      float jitter,
                      inout uint rng,
@@ -443,7 +487,6 @@ void traceAtmosphere(vec3 ro, vec3 rd,
     odM = 0.0;
 
     float len = max(tMax - tMin, 1e-4);
-    vec3  sunDir = normalize(SUN_DIR);
 
     for (int i = 0; i < ATM_SAMPLES; i++) {
         float u0 = (float(i)     + jitter) / float(ATM_SAMPLES);
@@ -470,12 +513,12 @@ void traceAtmosphere(vec3 ro, vec3 rd,
         inscatterR += dzR * sunAtt * viewAtt;
         inscatterM += dzM * sunAtt * viewAtt;
         
-        vec3 L_inc = multiScatterApprox(p, h);
+        vec3 L_inc = multiScatterApprox(p, h, sunDir);
         inscatterMS += (dzR * BETA_RAYLEIGH + dzM * BETA_MIE) * L_inc * viewAtt;
     }
 }
 
-vec3 sampleClouds(vec3 ro, vec3 rd, inout uint rng, out float T) {
+vec3 sampleClouds(vec3 ro, vec3 rd, vec3 sunDir, inout uint rng, out float T) {
     float t0, t1;
     if (!cloudInterval(ro, rd, t0, t1)) {
         T = 1.0;
@@ -485,7 +528,7 @@ vec3 sampleClouds(vec3 ro, vec3 rd, inout uint rng, out float T) {
     vec3 entry = ro + t0 * rd;
     vec3 acc = vec3(0.0);
     for (int i = 0; i < CLOUD_SAMPLES; i++) {
-        acc += radiance(entry, rd, rng);
+        acc += radiance(entry, rd, sunDir, rng);
     }
 
     T = transmittance(ro + t0 * rd, ro + t1 * rd);
@@ -518,7 +561,7 @@ void main() {
     vec2 fragCoord = gl_FragCoord.xy;
     vec3 ro     = CAMERA_POS;
     vec3 rd     = generateRay(fragCoord);
-    vec3 sunDir = normalize(SUN_DIR);
+    vec3 sunDir = SunDirection(6.0, 45.0, 0.0); //day time, h,m,s
 
     float tAtmo0, tAtmo1, tGround0, tGround1;
     bool  hitGroundFlag;
@@ -546,7 +589,7 @@ void main() {
     float T_cloud = 1.0;
     vec3  cloud   = vec3(0.0);
     if (hasCloud) {
-        cloud = sampleClouds(ro, rd, rng, T_cloud);
+        cloud = sampleClouds(ro, rd, sunDir, rng, T_cloud);
     }
 
     //background
@@ -566,7 +609,7 @@ void main() {
     if (!hasCloud) {
         vec3  aR, aM, aMS;
         float aOdR, aOdM;
-        traceAtmosphere(ro, rd, tMin, tMax, jitA, rng,
+        traceAtmosphere(ro, rd, sunDir, tMin, tMax, jitA, rng,
                         aR, aM, aMS, aOdR, aOdM);
         vec3 T_atm = AtomTransmittance(aOdR, aOdM);
         vec3 atm = SUN_INTENSITY * SUN_COLOR * (
@@ -577,13 +620,13 @@ void main() {
     } else {
         vec3  aR_f, aM_f, aMS_f;
         float aOdR_f, aOdM_f;
-        traceAtmosphere(ro, rd, tMin, tCloud0, jitA, rng,
+        traceAtmosphere(ro, rd, sunDir, tMin, tCloud0, jitA, rng,
                         aR_f, aM_f, aMS_f, aOdR_f, aOdM_f);
         vec3 T_atm_f = AtomTransmittance(aOdR_f, aOdM_f);
 
         vec3  aR_b, aM_b, aMS_b;
         float aOdR_b, aOdM_b;
-        traceAtmosphere(ro, rd, tCloud1, tMax, jitA, rng,
+        traceAtmosphere(ro, rd, sunDir, tCloud1, tMax, jitA, rng,
                         aR_b, aM_b, aMS_b, aOdR_b, aOdM_b);
         vec3 T_atm_b = AtomTransmittance(aOdR_b, aOdM_b);
 

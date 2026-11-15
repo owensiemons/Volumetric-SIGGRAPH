@@ -13,7 +13,7 @@ void init_shaders(unsigned int vert_shader, unsigned int frag_shader, unsigned i
 
 const bool kIsOffline = true; 
 const std::string kOutputFilename = "render_output.ppm";
-const int kOfflineSamples = 1;
+const int kOfflineSamples = 16;
 
 void saveFrameToImage(const std::string& filename, int width, int height, const std::vector<unsigned char>& pixels) {
     std::ofstream file(filename, std::ios::binary);
