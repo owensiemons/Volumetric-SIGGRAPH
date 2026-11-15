@@ -6,9 +6,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
+find_package(imgui CONFIG REQUIRED)
 
 add_executable(Volumetric-SIGGRAPH src/main.cpp)
 target_link_libraries(Volumetric-SIGGRAPH PRIVATE glfw glad::glad)
+target_link_libraries(Volumetric-SIGGRAPH PRIVATE imgui::imgui)
 
 add_custom_command(TARGET Volumetric-SIGGRAPH POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:Volumetric-SIGGRAPH>/src
