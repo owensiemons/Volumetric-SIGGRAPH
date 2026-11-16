@@ -6,6 +6,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <chrono>
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void process_input(GLFWwindow* window);
@@ -13,7 +14,7 @@ void init_shaders(unsigned int vert_shader, unsigned int frag_shader, unsigned i
 
 const bool kIsOffline = true; 
 const std::string kOutputFilename = "render_output.ppm";
-const int kOfflineSamples = 16;
+const int kOfflineSamples = 12;
 
 void saveFrameToImage(const std::string& filename, int width, int height, const std::vector<unsigned char>& pixels) {
     std::ofstream file(filename, std::ios::binary);
@@ -33,7 +34,7 @@ int main() {
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 
     if (kIsOffline) glfwWindowHint(GLFW_VISIBLE, GL_FALSE);
-    GLFWwindow* window = glfwCreateWindow(800, 600, "OpenGL Setup", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(800, 450, "OpenGL Setup", nullptr, nullptr);
     if (!window) { glfwTerminate(); return -1; }
     glfwMakeContextCurrent(window);
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
@@ -43,8 +44,8 @@ int main() {
         return -1;
     }
 
-    const char* vert_path = "src/vert.glsl";
-    const char* frag_path = "src/frag.glsl";
+    const char* vert_path = "src/shaders/vert.glsl";
+    const char* frag_path = "src/shaders/frag.glsl";
 
     std::string vertexCode;
     std::string fragmentCode;
@@ -120,6 +121,9 @@ int main() {
     glBindVertexArray(0);
 
     int frame = 0;
+    using Clock = std::chrono::steady_clock;
+    auto fps_start = Clock::now();
+    int fps_frame_cnt = 0;
 
 
     // == RENDER LOOP ==
@@ -193,6 +197,20 @@ int main() {
         process_input(window);
 
         frame++;
+        // FPS tracking
+        fps_frame_cnt++;
+
+        auto currentTime = Clock::now();
+        float elapsed = std::chrono::duration<float>(currentTime - fps_start).count();
+
+        if (elapsed >= 1.0f) {
+            float fps = fps_frame_cnt / elapsed;
+
+            std::cout << "[FPS] " << fps << std::endl;
+
+            fps_frame_cnt = 0;
+            fps_start = currentTime;
+        }
     }
     glfwTerminate();
     return 0;

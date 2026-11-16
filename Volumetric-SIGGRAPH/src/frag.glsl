@@ -194,7 +194,7 @@ float smin(float a, float b, float k) {
 float map(vec3 p) {
     float s1 = sdf_sphere(p, vec3(-0.5, 0.5, -3.0), 0.4);
     float s2 = sdf_sphere(p, vec3(0.0, 5.0, -8.0), 0.6);
-    float s3 = sdf_sphere(p, vec3(0.5, 10.0, -10.0), 0.6);
+    float s3 = sdf_sphere(p, vec3(0.5, 2.0, -15.0), 0.6);
     return smin(smin(s1, s2, 0.05), s3, 0.05);
 }
 
@@ -561,7 +561,7 @@ void main() {
     vec2 fragCoord = gl_FragCoord.xy;
     vec3 ro     = CAMERA_POS;
     vec3 rd     = generateRay(fragCoord);
-    vec3 sunDir = SunDirection(6.0, 45.0, 0.0); //day time, h,m,s
+    vec3 sunDir = SunDirection(18.0, 0.0, 0.0); //day time, h,m,s
 
     float tAtmo0, tAtmo1, tGround0, tGround1;
     bool  hitGroundFlag;
