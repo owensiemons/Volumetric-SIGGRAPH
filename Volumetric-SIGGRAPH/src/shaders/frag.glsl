@@ -5,18 +5,18 @@ out vec4 fragColor;
 
 uniform vec2 iResolution;
 uniform int frame;
+uniform int rawOutput;
+uniform float EXPOSURE;
 
 //Camera Parameters
-const vec3  CAMERA_POS           = vec3(0.0,0.0,0); // Camera position
-const vec3  CAMERA_DIR           = vec3(0.0, 0.5, -1.0); // Camera direction
+uniform vec3 CAMERA_POS;                                  // Camera position
+const vec3  CAMERA_DIR           = vec3(-0.2, 0.5, -1.0); // Camera direction
 const vec3  CAMERA_UP            = vec3(0.0, 1.0, 0.0); // Up direction
 const float TAN_HALF_FOV         = 0.57735026918962576; // tan(30°), half of the fov
 
-//Post Process
-const float EXPOSURE              = 2.3;
-
 //Solar Parameters
-const vec3  SUN_DIR              = normalize(vec3(0.290204, 0.002, -0.955741)); // 
+const vec3  SUN_TIME             = vec3(7.0, 43.0, 0.0); // hour, minute, second
+vec3        SUN_DIR;                                  
 const vec3  SUN_COLOR            = vec3(1.0, 1.0, 1.0);
 const vec3  SUN_INTENSITY        = vec3(12.0);   // irradiance
 const float SUN_ANGULAR_RADIUS   = 0.01465;      // angular radius of the disk
@@ -32,7 +32,7 @@ const vec3  PLANET_CENTER        = vec3(0.0, -(PLANET_RADIUS + 0.1), 0.0);
 const float HG_G = 0.85;
 const float SIGMA_S = 0.7;
 const float SIGMA_A = 0.2;
-const vec3  CLOUD_CENTER = vec3(0.0, 3.0, -10.0); 
+const vec3  CLOUD_CENTER = vec3(-6.0, 3.0, -10.0); 
 const float CLOUD_RADIUS = 2.0;
 
 //Atmosphere Parameters
@@ -47,10 +47,10 @@ const float MIE_EXTINCTION_SCALE  = 1.1;
 const vec3  GROUND_ALBEDO         = vec3(0.20, 0.18, 0.15);
 
 //Rendering Samples
-const int ATM_SAMPLES   = 64;
+const int ATM_SAMPLES   = 12;
 const int CLOUD_SAMPLES   = 12;
-const int ATM_CLOUD_SAMPLES = 16;
-const int MS_STEPS       = 3;
+const int ATM_CLOUD_SAMPLES = 12;
+const int MS_STEPS       = 2;
 const int MS_INTEGRATION = 3;
 
 const float dt = 0.01;
@@ -201,6 +201,57 @@ vec3 sample_HG_phase(vec3 dir, float g, inout uint rng) { // Claude generated, t
     return sin_theta * cos(phi) * t + sin_theta * sin(phi) * b + cos_theta * dir;
 }
 
+//SPA calculation
+vec3 SunDirection(float hour, float minute, float second) {
+    const float DEG2RAD = 0.017453292519943295;
+
+    const float LAT_RAD = 40.1053889 * DEG2RAD;
+    const float SIN_LAT = 0.6441957;
+    const float COS_LAT = 0.7648607;
+    const float LON_DEG = -88.2261389;
+
+    const float U_LAT   = atan(0.99664719 * tan(LAT_RAD));
+    const float Y_PAR   = 0.99664719 * sin(U_LAT);
+    const float X_PAR   = cos(U_LAT);
+
+    float dayFrac = ((hour + 5) + (minute + second / 60.0) / 60.0) / 24.0;
+    float d = 9761.5 + dayFrac;
+
+    float alphaDeg = 179.9885 + 0.8986 * dayFrac;
+    float deltaRad = (0.0050 - 0.3895 * dayFrac) * DEG2RAD;
+
+    const float SIN_XI = 4.2489e-5;
+
+    float nuDeg = mod(1.6227 + 360.98564737 * dayFrac, 360.0);
+    float hRad  = radians(mod(nuDeg + LON_DEG - alphaDeg + 720.0, 360.0));
+
+    float sinH = sin(hRad);
+    float cosH = cos(hRad);
+    float sinD = sin(deltaRad);
+    float cosD = cos(deltaRad);
+
+    float denom = cosD - X_PAR * SIN_XI * cosH;
+    float deltaAlphaRad = atan(-X_PAR * SIN_XI * sinH, denom);
+    float deltaPrimeRad = atan((sinD - Y_PAR * SIN_XI) * cos(deltaAlphaRad), denom);
+    float hPrimeRad     = hRad - deltaAlphaRad;
+
+    float sinElev = SIN_LAT * sin(deltaPrimeRad) + COS_LAT * cos(deltaPrimeRad) * cos(hPrimeRad);
+    float elevRad = asin(clamp(sinElev, -1.0, 1.0));
+    float zenithRad = (PI * 0.5) - elevRad;
+
+    float azmAstroRad = atan(
+        sin(hPrimeRad),
+        cos(hPrimeRad) * SIN_LAT - tan(deltaPrimeRad) * COS_LAT
+    );
+    float azimuthRad = azmAstroRad + PI;
+
+    return normalize(vec3(
+        sin(zenithRad) * cos(azimuthRad),
+        cos(zenithRad),
+        - sin(zenithRad) * sin(azimuthRad)
+    ));
+}
+
 // == transmittance / optical depth calculations ==
 // integrate optical depth for just Rayleigh and Mie
 void integrateOpticalDepthAtmos(vec3 ro, vec3 rd, float t0, float t1, int N, float jitter,
@@ -252,7 +303,7 @@ void integrateOpticalDepth(vec3 ro, vec3 rd, float t0, float t1, int N, float ji
 float integrateOpticalDepthCloud(vec3 x, vec3 y) {
     vec3 d = y - x;
     float len = length(d);
-    if (len < 1e-6) return 1.0;
+    if (len < 1e-6) return 0.0;
     vec3 dir = d / len;
 
     float optical_depth = 0.0;
@@ -708,6 +759,7 @@ vec3 sampleClouds(vec3 ro, vec3 rd, inout uint rng, out float T) {
 
 void main() {
     vec2 fragCoord = gl_FragCoord.xy;
+    SUN_DIR = SunDirection(SUN_TIME.x, SUN_TIME.y, SUN_TIME.z);
     uint rng = rngSeed(uvec2(fragCoord), uint(frame));
 
     fragCoord += vec2(rand(rng) - 0.5, rand(rng) - 0.5);
@@ -771,7 +823,7 @@ void main() {
     // full atmosphere transmittance * cloud transmittance * background color
     vec3 color = atmRad + T_front * cloud + T_atm * vec3(T_cloud) * bg;
 
-    fragColor = vec4(tonemap(color), 1.0);
+    fragColor = vec4(rawOutput == 1 ? color : tonemap(color), 1.0);
 }
 
 /*

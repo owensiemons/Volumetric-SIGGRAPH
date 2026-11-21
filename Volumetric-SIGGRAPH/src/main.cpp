@@ -7,23 +7,40 @@
 #include <string>
 #include <vector>
 #include <chrono>
+#include <cmath>
+#include <algorithm>
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void process_input(GLFWwindow* window);
-void init_shaders(unsigned int vert_shader, unsigned int frag_shader, unsigned int shader_program, const char* vert_src, const char* frag_src);
+bool init_shaders(unsigned int vert_shader, unsigned int frag_shader, unsigned int shader_program, const char* vert_src, const char* frag_src);
 
 const bool kIsOffline = true; 
 const std::string kOutputFilename = "render_output.ppm";
-const int kOfflineSamples = 12;
 
-void saveFrameToImage(const std::string& filename, int width, int height, const std::vector<unsigned char>& pixels) {
+const int kOfflineSamples = 32;
+const float kExposure = 1.3f;
+
+void tonemap(float* rgb) {
+    for (int c = 0; c < 3; c++) {
+        float m = rgb[c] * kExposure;
+        m = 1.0f - std::exp(-std::max(m, 0.0f));
+        rgb[c] = std::pow(std::clamp(m, 0.0f, 1.0f), 1.0f / 2.2f);
+    }
+}
+
+bool saveFrameToImage(const std::string& filename, int width, int height, const std::vector<unsigned char>& pixels) {
     std::ofstream file(filename, std::ios::binary);
     file << "P6\n" << width << " " << height << "\n255\n";
     for (int y = height - 1; y >= 0; --y) {
         file.write(reinterpret_cast<const char*>(&pixels[y * width * 3]), width * 3);
     }
     file.close();
+    if (!file) {
+        std::cout << "[Offline] FAILED to write: " << filename << std::endl;
+        return false;
+    }
     std::cout << "[Offline] Completed: " << filename << std::endl;
+    return true;
 }
 
 int main() {
@@ -82,7 +99,10 @@ int main() {
     unsigned int fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
     unsigned int shaderProgram  = glCreateProgram();
 
-    init_shaders(vertexShader, fragmentShader, shaderProgram, vertexCode.c_str(), fragmentCode.c_str());
+    if (!init_shaders(vertexShader, fragmentShader, shaderProgram, vertexCode.c_str(), fragmentCode.c_str())) {
+        glfwTerminate();
+        return -1;
+    }
 
     // == INIT DATA ==
 
@@ -146,30 +166,61 @@ int main() {
         //input parameter
         glUniform3fv(glGetUniformLocation(shaderProgram, "CAMERA_POS"), 1, cameraPos);
 
+        glUniform1f(glGetUniformLocation(shaderProgram, "EXPOSURE"), kExposure);
+        glUniform1i(glGetUniformLocation(shaderProgram, "rawOutput"), 1);
+
         glBindVertexArray(VAO);
         glPixelStorei(GL_PACK_ALIGNMENT, 1);
 
-        // accumulate frames
-        std::vector<unsigned int> accum(fbW * fbH * 3, 0u);
+        unsigned int colorTex, fbo;
+        glGenTextures(1, &colorTex);
+        glBindTexture(GL_TEXTURE_2D, colorTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB32F, fbW, fbH, 0, GL_RGB, GL_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glGenFramebuffers(1, &fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, colorTex, 0);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            std::cout << "ERROR::OFFLINE::INCOMPLETE_FRAMEBUFFER\n";
+            glfwTerminate();
+            return -1;
+        }
+
+        std::vector<float> accum(fbW * fbH * 3, 0.0f);
+        std::vector<float> hdr(fbW * fbH * 3);
         std::vector<unsigned char> pixels(fbW * fbH * 3);
         for (int i = 0; i < kOfflineSamples; i++) {
             glClear(GL_COLOR_BUFFER_BIT);
             glUniform1i(frameLoc, i);
             glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
-            glReadPixels(0, 0, fbW, fbH, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
+            glReadPixels(0, 0, fbW, fbH, GL_RGB, GL_FLOAT, hdr.data());
             for (size_t j = 0; j < accum.size(); j++) {
-                accum[j] += pixels[j];
+                accum[j] += hdr[j];
             }
             std::cout << "[Mode]Offline " << i << "/" << kOfflineSamples << "\n";
         }
-        for (size_t j = 0; j < accum.size(); j++) {
-            pixels[j] = (unsigned char)(accum[j] / kOfflineSamples);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &colorTex);
+
+        for (int p = 0; p < fbW * fbH; p++) {
+            float rgb[3] = {
+                accum[p * 3 + 0] / kOfflineSamples,
+                accum[p * 3 + 1] / kOfflineSamples,
+                accum[p * 3 + 2] / kOfflineSamples
+            };
+            tonemap(rgb);
+            for (int c = 0; c < 3; c++) {
+                pixels[p * 3 + c] = (unsigned char)std::lround(rgb[c] * 255.0f);
+            }
         }
 
-        saveFrameToImage(kOutputFilename, fbW, fbH, pixels);
+        bool saved = saveFrameToImage(kOutputFilename, fbW, fbH, pixels);
 
         glfwTerminate();
-        return 0;
+        return saved ? 0 : -1;
     }
 
     std::cout << "[Mode]Realtime\n";
@@ -188,6 +239,9 @@ int main() {
         float cameraPos[3] = { 0.0f, 0.0f, 0.0f };
 
         glUniform3fv(glGetUniformLocation(shaderProgram, "CAMERA_POS"), 1, cameraPos);
+
+        glUniform1f(glGetUniformLocation(shaderProgram, "EXPOSURE"), kExposure);
+        glUniform1i(glGetUniformLocation(shaderProgram, "rawOutput"), 0);
 
         glBindVertexArray(VAO);
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
@@ -217,7 +271,7 @@ int main() {
 }
 
 // LearnOpenGL vertex / frag shader boilerplate
-void init_shaders(unsigned int vert_shader, unsigned int frag_shader, unsigned int shader_program, const char* vert_src, const char* frag_src) {
+bool init_shaders(unsigned int vert_shader, unsigned int frag_shader, unsigned int shader_program, const char* vert_src, const char* frag_src) {
     int success;
     char infoLog[512];
     glShaderSource(vert_shader, 1, &vert_src, NULL);
@@ -227,6 +281,8 @@ void init_shaders(unsigned int vert_shader, unsigned int frag_shader, unsigned i
     {
         glGetShaderInfoLog(vert_shader, 512, NULL, infoLog);
         std::cout << "ERROR::SHADER::VERTEX::COMPILATION_FAILED\n" << infoLog << std::endl;
+        glDeleteShader(vert_shader);
+        return false;
     }
     // fragment shader
     glShaderSource(frag_shader, 1, &frag_src, NULL);
@@ -237,6 +293,9 @@ void init_shaders(unsigned int vert_shader, unsigned int frag_shader, unsigned i
     {
         glGetShaderInfoLog(frag_shader, 512, NULL, infoLog);
         std::cout << "ERROR::SHADER::FRAGMENT::COMPILATION_FAILED\n" << infoLog << std::endl;
+        glDeleteShader(vert_shader);
+        glDeleteShader(frag_shader);
+        return false;
     }
 
 
@@ -246,12 +305,14 @@ void init_shaders(unsigned int vert_shader, unsigned int frag_shader, unsigned i
     glLinkProgram(shader_program);
     // check for linking errors
     glGetProgramiv(shader_program, GL_LINK_STATUS, &success);
+    glDeleteShader(vert_shader);
+    glDeleteShader(frag_shader);
     if (!success) {
         glGetProgramInfoLog(shader_program, 512, NULL, infoLog);
         std::cout << "ERROR::SHADER::PROGRAM::LINKING_FAILED\n" << infoLog << std::endl;
+        return false;
     }
-    glDeleteShader(vert_shader);
-    glDeleteShader(frag_shader);
+    return true;
 }
 
 
