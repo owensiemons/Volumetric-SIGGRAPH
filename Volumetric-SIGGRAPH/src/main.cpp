@@ -3,6 +3,8 @@
 #include "camera_class.hpp"
 
 void key_press_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
+void cursor_move_callback(GLFWwindow* window, double xpos, double ypos);
+void cursor_press_callback(GLFWwindow* window, int button, int action, int mods);
 void process_input(GLFWwindow* window, Camera& camera);
 
 const bool kIsOffline = false; 
@@ -21,16 +23,18 @@ int main() {
     GLFWwindow* window = glfwCreateWindow(1200, 900, "OpenGL Setup", nullptr, nullptr);
     if (!window) { glfwTerminate(); return -1; }
     glfwMakeContextCurrent(window);
-    glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
 
+    glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
     glfwSetKeyCallback(window, key_press_callback);
+    glfwSetMouseButtonCallback(window, cursor_press_callback);
+    glfwSetCursorPosCallback(window, cursor_move_callback);
 
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
         std::cout << "Failed to init GLAD\n";
         return -1;
     }
 
-    Camera camera(glm::vec3(0.0, 0.0, 0.0), glm::vec3(0.0, 0.0, -1.0), glm::vec3(0.0, 1.0, 0.0));
+    Camera camera(glm::vec3(0.0, 0.0, 0.0), scene.theta, scene.phi, glm::vec3(0.0, 1.0, 0.0));
     scene.window = window;
     
     // until GUI, set snapshot dim to window dim
@@ -163,6 +167,7 @@ int main() {
             glfwSwapBuffers(window);
             glfwPollEvents();
             process_input(window, camera);
+            camera.cam_update(scene.theta, scene.phi);
 
             frame++;
             // FPS tracking
@@ -287,6 +292,14 @@ void process_input(GLFWwindow* window, Camera& camera) {
         if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) {
             camera.move_down();
         }
+
+        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {
+            camera.rotate_left();
+        }
+
+        if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) {
+            camera.rotate_right();
+        }
     }
 }
 
@@ -296,4 +309,47 @@ void key_press_callback(GLFWwindow* window, int key, int scancode, int action, i
             scene.accumulate_requested = true;
         }
     }
+}
+
+void cursor_press_callback(GLFWwindow* window, int button, int action, int mods) {
+    if (button == GLFW_MOUSE_BUTTON_LEFT) {
+        if (action == GLFW_PRESS) {
+            scene.lmb_held = true;
+            scene.first_mouse = true;
+        } else if (action == GLFW_RELEASE) {
+            scene.lmb_held = false;
+            scene.first_mouse = true;
+        }
+    }
+}
+
+void cursor_move_callback(GLFWwindow* window, double xpos, double ypos) {
+    float x_pos = static_cast<float>(xpos);
+    float y_pos = static_cast<float>(ypos);
+
+    if (!scene.lmb_held || scene.accumulate_requested || scene.accumulating || scene.first_mouse) {
+        scene.last_mouse_x = x_pos;
+        scene.last_mouse_y = y_pos;
+        scene.first_mouse = false;
+        return;
+    }
+
+    float dx = x_pos - scene.last_mouse_x;
+    float dy = y_pos - scene.last_mouse_y;
+    dx *= scene.mouse_sens;
+    dy *= scene.mouse_sens;
+
+    if (std::abs(dx) < 0.001 && std::abs(dy) < 0.001) {
+        dx = 0;
+        dy = 0;
+    }
+
+    scene.phi -= dy;
+    scene.theta += dx;
+    
+    const float limit = glm::half_pi<float>() - 0.0001f;
+    scene.phi = glm::clamp(scene.phi, -limit, limit);
+
+    scene.last_mouse_x = x_pos;
+    scene.last_mouse_y = y_pos;
 }

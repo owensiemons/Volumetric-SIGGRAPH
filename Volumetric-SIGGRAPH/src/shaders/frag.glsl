@@ -19,7 +19,7 @@ const float TAN_HALF_FOV         = 0.57735026918962576; // tan(30°), half of th
 const float EXPOSURE              = 2.3;
 
 //Solar Parameters
-const vec3  SUN_DIR              = normalize(vec3(0.290204, 0.002, -0.955741)); // 
+const vec3  SUN_DIR              = normalize(vec3(0.290204, 0.02, -0.955741)); // 
 const vec3  SUN_COLOR            = vec3(1.0, 1.0, 1.0);
 const vec3  SUN_INTENSITY        = vec3(12.0);   // irradiance
 const float SUN_ANGULAR_RADIUS   = 0.01465;      // angular radius of the disk
@@ -285,6 +285,7 @@ vec3 sunTransmittance(vec3 p, vec3 sunDir, float jitter) {
 // == Background stuff ==
 // returns unattenuated radiance, path transmittance is applied by the caller
 vec3 shadeGround(vec3 gP, vec3 n, vec3 sunDir, float jitter) {
+    gP = gP + 1e-2 * n;
     vec3 sunAtt = sunTransmittance(gP, sunDir, jitter);
     float NdotL = max(dot(n, sunDir), 0.0);
     return GROUND_ALBEDO / PI * SUN_INTENSITY * SUN_COLOR * sunAtt * NdotL;
@@ -610,14 +611,14 @@ vec3 cloudRadiance(vec3 ro, vec3 rd, inout uint rng) {
                                    tGround0, tGround1,
                                    hitGroundFlag, rng);
 
-            float tMax = (hitGroundFlag && tGround0 > 1e-4) ? tGround0 : tAtmo1;
+            float tMax = (hitGroundFlag && tGround0 > 1e-2) ? tGround0 : tAtmo1;
 
             vec3 T_atm; vec3 atmRad;
             atmosRadTrans(x, rd, tb, tMax, rand(rng), rng, false, 0.0, 0.0, T_atm, atmRad);
 
 
             vec3 bg = vec3(0.0);
-            if (hitGroundFlag && tGround0 > 1e-4) {
+            if (hitGroundFlag && tGround0 > 1e-2) {
                 vec3 gP = x + rd * tGround0;
                 vec3 n  = normalize(gP - PLANET_CENTER);
                 bg += shadeGround(gP, n, SUN_DIR, rand(rng));
@@ -725,7 +726,7 @@ void main() {
     }
 
     float tMin = max(tAtmo0, 0.0);
-    float tMax = (hitGroundFlag && tGround0 > 1e-4) ? tGround0 : tAtmo1;
+    float tMax = (hitGroundFlag && tGround0 > 1e-2) ? tGround0 : tAtmo1;
 
 
     // cloud interval along this ray
@@ -756,7 +757,7 @@ void main() {
 
     // --- background: ground or sun disk, attenuated by the cloud ---
     vec3 bg = vec3(0.0);
-    if (hitGroundFlag && tGround0 > 1e-4) {
+    if (hitGroundFlag && tGround0 > 1e-2) {
         vec3 gP = ro + rd * tGround0;
         vec3 n  = normalize(gP - PLANET_CENTER);
         bg += shadeGround(gP, n, SUN_DIR, rand(rng));
