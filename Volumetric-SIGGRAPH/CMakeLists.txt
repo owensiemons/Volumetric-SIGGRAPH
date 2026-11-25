@@ -7,12 +7,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
 find_package(PNG REQUIRED)
+find_package(GLM CONFIG REQUIRED)
 
-add_executable(Volumetric-SIGGRAPH src/main.cpp src/shader_class.cpp src/common.cpp)
+add_executable(Volumetric-SIGGRAPH src/main.cpp src/shader_class.cpp 
+src/camera_class.cpp src/common.cpp)
 
-target_sources(Volumetric-SIGGRAPH PRIVATE src/shader_class.hpp src/common.hpp)
+target_sources(Volumetric-SIGGRAPH PRIVATE src/shader_class.hpp
+ src/camera_class.hpp src/common.hpp)
 
-target_link_libraries(Volumetric-SIGGRAPH PRIVATE glfw glad::glad PNG::PNG)
+target_link_libraries(Volumetric-SIGGRAPH PRIVATE glfw glad::glad PNG::PNG glm::glm)
 
 add_custom_command(TARGET Volumetric-SIGGRAPH POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:Volumetric-SIGGRAPH>/src

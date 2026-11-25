@@ -5,6 +5,10 @@ class Shader {
 public:
     Shader(const char* frag_path, const char* vert_path);
 
+    void useProgram() {
+        glUseProgram(_shader_program);
+    }
+
     unsigned int getProgram() {
         return _shader_program;
     }

@@ -1,5 +1,6 @@
 #version 330 core
 
+in vec2 vUV;
 out vec4 fragColor;
 uniform sampler2D accumTex;
 
@@ -17,7 +18,7 @@ vec3 tonemap(vec3 color, float exposure) {
 }
 
 void main() {
-    vec4 col = texelFetch(accumTex, ivec2(gl_FragCoord.xy), 0);
+    vec4 col = texture(accumTex, vUV);
     vec3 tonemapped = tonemap(col.xyz, 2.3);
     fragColor = vec4(linearToSRGB(tonemapped), 1.0);
 }
