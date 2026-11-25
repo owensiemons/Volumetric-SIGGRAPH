@@ -1,10 +1,11 @@
 #version 330 core
 #define PI 3.14159265359
 
-out vec4 fragColor;
+layout(location = 0) out vec4 fragColor;
 
 uniform vec2 iResolution;
 uniform int frame;
+uniform int postprocess;
 
 //Camera Parameters
 const vec3  CAMERA_POS           = vec3(0.0,0.0,0); // Camera position
@@ -33,7 +34,7 @@ const float HG_G = 0.85;
 const float SIGMA_S = 0.7;
 const float SIGMA_A = 0.2;
 const vec3  CLOUD_CENTER = vec3(0.0, 3.0, -10.0); 
-const float CLOUD_RADIUS = 2.0;
+const float CLOUD_RADIUS = 2.5;
 
 //Atmosphere Parameters
 const vec3  BETA_RAYLEIGH         = vec3(5.8e-3, 1.35e-2, 3.31e-2);
@@ -47,15 +48,14 @@ const float MIE_EXTINCTION_SCALE  = 1.1;
 const vec3  GROUND_ALBEDO         = vec3(0.20, 0.18, 0.15);
 
 //Rendering Samples
-const int ATM_SAMPLES   = 64;
-const int CLOUD_SAMPLES   = 12;
-const int ATM_CLOUD_SAMPLES = 16;
+const int ATM_SAMPLES   = 8;
+const int CLOUD_SAMPLES   = 1;
+const int ATM_CLOUD_SAMPLES = 8;
 const int MS_STEPS       = 3;
 const int MS_INTEGRATION = 3;
 
 const float dt = 0.01;
 const float SUN_CLOUD_DT = 0.1;
-
 
 
 // == RNG stuff ==
@@ -89,7 +89,7 @@ float smin(float a, float b, float k) {
 
 //define cloud 
 float map(vec3 p) {
-    float s1 = sdf_sphere(p, CLOUD_CENTER, CLOUD_RADIUS);
+    float s1 = sdf_sphere(p, CLOUD_CENTER, CLOUD_RADIUS / 1.3);
     float s2 = sdf_sphere(p, CLOUD_CENTER + vec3(0.2, 0.0, 0.0), CLOUD_RADIUS / 4.0);
     return s1;//smin(s1, s2, 0.05);
 }
@@ -403,7 +403,7 @@ void traceAtmosphereAndCloud(vec3 ro, vec3 rd,
     if (hasCloud) {
         float cloud_len = max(tCloud1 - tCloud0, 1e-4);
         float step_size = cloud_len / float(ATM_CLOUD_SAMPLES);
-        vec3 curr = ro + (tCloud0 + 0.5 * step_size) * rd;
+        vec3 curr = ro + (tCloud0 + rand(rng) * step_size) * rd;
 
         for (int i = 0; i < ATM_CLOUD_SAMPLES; i++) {
             float h  = max(length(curr - PLANET_CENTER) - PLANET_RADIUS, 0.0);
@@ -771,7 +771,12 @@ void main() {
     // full atmosphere transmittance * cloud transmittance * background color
     vec3 color = atmRad + T_front * cloud + T_atm * vec3(T_cloud) * bg;
 
-    fragColor = vec4(tonemap(color), 1.0);
+    if (postprocess == 1) {
+        fragColor = vec4(tonemap(color), 1.0);
+    } else {
+        fragColor = vec4(color, 1.0);
+    }
+    
 }
 
 /*
