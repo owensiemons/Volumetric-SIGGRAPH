@@ -1,30 +1,13 @@
-#include <glad/glad.h>
-#include <GLFW/glfw3.h>
+#include "common.hpp"
+#include "shader_class.hpp"
 
-#include <iostream>
-#include <fstream>
-#include <sstream>
-#include <string>
-#include <vector>
-#include <chrono>
+void key_press_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
 
-void framebuffer_size_callback(GLFWwindow* window, int width, int height);
-void process_input(GLFWwindow* window);
-void init_shaders(unsigned int vert_shader, unsigned int frag_shader, unsigned int shader_program, const char* vert_src, const char* frag_src);
-
-const bool kIsOffline = true; 
+const bool kIsOffline = false; 
 const std::string kOutputFilename = "render_output.ppm";
-const int kOfflineSamples = 30;
+const int kOfflineSamples = 50;
 
-void saveFrameToImage(const std::string& filename, int width, int height, const std::vector<unsigned char>& pixels) {
-    std::ofstream file(filename, std::ios::binary);
-    file << "P6\n" << width << " " << height << "\n255\n";
-    for (int y = height - 1; y >= 0; --y) {
-        file.write(reinterpret_cast<const char*>(&pixels[y * width * 3]), width * 3);
-    }
-    file.close();
-    std::cout << "[Offline] Completed: " << filename << std::endl;
-}
+Scene scene;
 
 int main() {
     if (!glfwInit()) return -1;
@@ -38,55 +21,36 @@ int main() {
     glfwMakeContextCurrent(window);
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
 
+    glfwSetKeyCallback(window, key_press_callback);
+
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
         std::cout << "Failed to init GLAD\n";
         return -1;
     }
 
+
+    scene.window = window;
+    
+    glfwGetFramebufferSize(window, &scene.snapshot_width, &scene.snapshot_height);
+
     const char* vert_path = "src/shaders/vert.glsl";
     const char* frag_path = "src/shaders/frag.glsl";
 
-    std::string vertexCode;
-    std::string fragmentCode;
-    {
-        std::ifstream vShaderFile;
-        std::ifstream fShaderFile;
-        // ensure ifstream objects can throw exceptions:
-        vShaderFile.exceptions(std::ifstream::failbit | std::ifstream::badbit);
-        fShaderFile.exceptions(std::ifstream::failbit | std::ifstream::badbit);
-        try
-        {
-            // open files
-            vShaderFile.open(vert_path);
-            fShaderFile.open(frag_path);
-            std::stringstream vShaderStream, fShaderStream;
-            // read file's buffer contents into streams
-            vShaderStream << vShaderFile.rdbuf();
-            fShaderStream << fShaderFile.rdbuf();
-            // close file handlers
-            vShaderFile.close();
-            fShaderFile.close();
-            // convert stream into string
-            vertexCode = vShaderStream.str();
-            fragmentCode = fShaderStream.str();
-        }
-        catch (std::ifstream::failure& e)
-        {
-            std::cout << "ERROR::SHADER::FILE_NOT_SUCCESSFULLY_READ: " << e.what() << std::endl;
-            return -1;
-        }
-    }
+    Shader main_shaders(frag_path, vert_path);
 
-    unsigned int vertexShader   = glCreateShader(GL_VERTEX_SHADER);
-    unsigned int fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-    unsigned int shaderProgram  = glCreateProgram();
+    const char* realtime_post_path = "src/shaders/realtime_post.glsl";
 
-    init_shaders(vertexShader, fragmentShader, shaderProgram, vertexCode.c_str(), fragmentCode.c_str());
+    Shader rp_shaders(realtime_post_path, vert_path);
+
+    const char* final_post_path = "src/shaders/final_post.glsl";
+
+    Shader fp_shaders(final_post_path, vert_path);
 
     // == INIT DATA ==
 
-    int resLoc = glGetUniformLocation(shaderProgram, "iResolution");
-    int frameLoc = glGetUniformLocation(shaderProgram, "frame");
+    int resLoc = glGetUniformLocation(main_shaders.getProgram(), "iResolution");
+    int frameLoc = glGetUniformLocation(main_shaders.getProgram(), "frame");
+    int postLoc = glGetUniformLocation(main_shaders.getProgram(), "postprocess");
 
     float vertices[] = {
          1.0f,  1.0f, 0.0f,
@@ -119,138 +83,155 @@ int main() {
     
     glBindVertexArray(0);
 
+    // generate textures and FBOS
+    unsigned int accumFBO;
+    unsigned int accumTex;
+    unsigned int finalFBO;
+    unsigned int finalTex;
+    
+    {
+        glGenFramebuffers(1, &accumFBO);
+        glBindFramebuffer(GL_FRAMEBUFFER, accumFBO);
+
+        glGenTextures(1, &accumTex);
+        glBindTexture(GL_TEXTURE_2D, accumTex);
+
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, scene.snapshot_width, scene.snapshot_height, 0, GL_RGBA, GL_FLOAT, 0);
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+
+        glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, accumTex, 0);
+
+        glGenFramebuffers(1, &finalFBO);
+        glBindFramebuffer(GL_FRAMEBUFFER, finalFBO);
+        
+        glGenTextures(1, &finalTex);
+        glBindTexture(GL_TEXTURE_2D, finalTex);
+
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16, scene.snapshot_width, scene.snapshot_height, 0, GL_RGBA, GL_UNSIGNED_SHORT, 0);
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+
+        glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, finalTex, 0);
+    }
+
     int frame = 0;
     using Clock = std::chrono::steady_clock;
     auto fps_start = Clock::now();
     int fps_frame_cnt = 0;
 
-
-    // == RENDER LOOP ==
-    if (kIsOffline) {
-        std::cout << "[Mode]Offline\n";
-
-        glfwWindowHint(GLFW_VISIBLE, GL_FALSE);
-
-        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-
-        glUseProgram(shaderProgram);
-
-        int fbW, fbH;
-        glfwGetFramebufferSize(window, &fbW, &fbH);
-
-        glUniform2f(resLoc, (float)fbW, (float)fbH);
-
-        glBindVertexArray(VAO);
-        glPixelStorei(GL_PACK_ALIGNMENT, 1);
-
-        // accumulate frames
-        std::vector<unsigned int> accum(fbW * fbH * 3, 0u);
-        std::vector<unsigned char> pixels(fbW * fbH * 3);
-        for (int i = 0; i < kOfflineSamples; i++) {
-            glClear(GL_COLOR_BUFFER_BIT);
-            glUniform1i(frameLoc, i);
-            glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
-            glReadPixels(0, 0, fbW, fbH, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
-            for (size_t j = 0; j < accum.size(); j++) {
-                accum[j] += pixels[j];
-            }
-            std::cout << "[Mode]Offline " << i << "/" << kOfflineSamples << "\n";
-        }
-        for (size_t j = 0; j < accum.size(); j++) {
-            pixels[j] = (unsigned char)(accum[j] / kOfflineSamples);
-        }
-
-        saveFrameToImage(kOutputFilename, fbW, fbH, pixels);
-
-        glfwTerminate();
-        return 0;
-    }
-
-    std::cout << "[Mode]Realtime\n";
     while (!glfwWindowShouldClose(window)) {
-        glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
+        if (!scene.accumulate_requested) { // realtime / preview path
+            scene.realtime = true;
 
-        glUseProgram(shaderProgram);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-        int fbW, fbH;
-        glfwGetFramebufferSize(window, &fbW, &fbH);
+            glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
 
-        glUniform2f(resLoc, (float)fbW, (float)fbH);
-        glUniform1i(frameLoc, frame);
+            glUseProgram(main_shaders.getProgram());
 
-        glBindVertexArray(VAO);
-        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+            int fbW, fbH;
+            glfwGetFramebufferSize(window, &fbW, &fbH);
 
-        glfwSwapBuffers(window);
-        glfwPollEvents();
-        process_input(window);
+            glUniform2f(resLoc, (float)fbW, (float)fbH);
+            glUniform1i(frameLoc, frame);
+            glUniform1i(postLoc, 1);
 
-        frame++;
-        // FPS tracking
-        fps_frame_cnt++;
+            glBindVertexArray(VAO);
+            glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
 
-        auto currentTime = Clock::now();
-        float elapsed = std::chrono::duration<float>(currentTime - fps_start).count();
+            glfwSwapBuffers(window);
+            glfwPollEvents();
+            process_input(window);
 
-        if (elapsed >= 1.0f) {
-            float fps = fps_frame_cnt / elapsed;
+            frame++;
+            // FPS tracking
+            fps_frame_cnt++;
 
-            std::cout << "[FPS] " << fps << std::endl;
+            auto currentTime = Clock::now();
+            float elapsed = std::chrono::duration<float>(currentTime - fps_start).count();
 
-            fps_frame_cnt = 0;
-            fps_start = currentTime;
+            if (elapsed >= 1.0f) {
+                float fps = fps_frame_cnt / elapsed;
+                std::cout << "[FPS] " << fps << std::endl;
+                fps_frame_cnt = 0;
+                fps_start = currentTime;
+            }
+
+        } else { // accumulate / snapshot path
+            scene.realtime = false;
+            scene.accumulate_requested = false;
+            scene.accumulating = true;
+
+            glBindFramebuffer(GL_FRAMEBUFFER, accumFBO);
+            glViewport(0, 0, scene.snapshot_width, scene.snapshot_height);
+            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+
+            glBindVertexArray(VAO);
+            
+            for (int i = 0; i < kOfflineSamples; i++) {
+                // draw to accumulate texture
+                glBindFramebuffer(GL_FRAMEBUFFER, accumFBO);
+                glViewport(0, 0, scene.snapshot_width, scene.snapshot_height);
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_CONSTANT_ALPHA, GL_ONE_MINUS_CONSTANT_ALPHA);
+
+                glUseProgram(main_shaders.getProgram());
+                glUniform2f(resLoc, (float)scene.snapshot_width, (float)scene.snapshot_height);
+                glUniform1i(frameLoc, frame++);
+                glUniform1i(postLoc, 0);
+
+
+                glBlendColor(0, 0, 0, 1.0f / (i + 1));
+                glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+                glDisable(GL_BLEND);
+                
+                // draw to screen with tonemap and stuff
+                glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+                int fbW, fbH;
+                glfwGetFramebufferSize(window, &fbW, &fbH);
+                glViewport(0, 0, fbW, fbH);
+
+                glUseProgram(rp_shaders.getProgram());
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, accumTex);
+                glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+                
+                glfwSwapBuffers(window);
+                glfwPollEvents();
+                glFinish();
+            }
+
+            // final post-process pass for png
+            glBindFramebuffer(GL_FRAMEBUFFER, finalFBO);
+            glViewport(0, 0, scene.snapshot_width, scene.snapshot_height);
+            glUseProgram(fp_shaders.getProgram());
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, accumTex);
+            glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+            
+            // save to file
+            std::vector<unsigned short> pixels(scene.snapshot_width * scene.snapshot_height * 4);
+            glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            glReadPixels(0, 0, scene.snapshot_width, scene.snapshot_height, GL_RGBA, GL_UNSIGNED_SHORT, pixels.data());
+            save_image(("renders/render_" + std::to_string(scene.curr_render++) + ".png").c_str(), scene.snapshot_width, scene.snapshot_height, pixels);
+            scene.accumulating = false;
         }
+
     }
     glfwTerminate();
     return 0;
 }
 
-// LearnOpenGL vertex / frag shader boilerplate
-void init_shaders(unsigned int vert_shader, unsigned int frag_shader, unsigned int shader_program, const char* vert_src, const char* frag_src) {
-    int success;
-    char infoLog[512];
-    glShaderSource(vert_shader, 1, &vert_src, NULL);
-    glCompileShader(vert_shader);
-    glGetShaderiv(vert_shader, GL_COMPILE_STATUS, &success);
-    if (!success)
-    {
-        glGetShaderInfoLog(vert_shader, 512, NULL, infoLog);
-        std::cout << "ERROR::SHADER::VERTEX::COMPILATION_FAILED\n" << infoLog << std::endl;
-    }
-    // fragment shader
-    glShaderSource(frag_shader, 1, &frag_src, NULL);
-    glCompileShader(frag_shader);
-    // check for shader compile errors
-    glGetShaderiv(frag_shader, GL_COMPILE_STATUS, &success);
-    if (!success)
-    {
-        glGetShaderInfoLog(frag_shader, 512, NULL, infoLog);
-        std::cout << "ERROR::SHADER::FRAGMENT::COMPILATION_FAILED\n" << infoLog << std::endl;
-    }
-
-
-    // link shaders
-    glAttachShader(shader_program, vert_shader);
-    glAttachShader(shader_program, frag_shader);
-    glLinkProgram(shader_program);
-    // check for linking errors
-    glGetProgramiv(shader_program, GL_LINK_STATUS, &success);
-    if (!success) {
-        glGetProgramInfoLog(shader_program, 512, NULL, infoLog);
-        std::cout << "ERROR::SHADER::PROGRAM::LINKING_FAILED\n" << infoLog << std::endl;
-    }
-    glDeleteShader(vert_shader);
-    glDeleteShader(frag_shader);
-}
-
-
-void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
-    glViewport(0, 0, width, height);
-}
-
-void process_input(GLFWwindow* window) {
-    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
-        glfwSetWindowShouldClose(window, true);
+void key_press_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+    if (key == GLFW_KEY_C && action == GLFW_PRESS) {
+        if(scene.realtime && !scene.accumulating) {
+            scene.accumulate_requested = true;
+        }
     }
 }
