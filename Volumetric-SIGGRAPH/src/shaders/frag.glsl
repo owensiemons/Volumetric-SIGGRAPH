@@ -19,7 +19,7 @@ const float TAN_HALF_FOV         = 0.57735026918962576; // tan(30°), half of th
 const float EXPOSURE              = 2.3;
 
 //Solar Parameters
-const vec3  SUN_DIR              = normalize(vec3(0.290204, 0.02, -0.955741)); // 
+const vec3  SUN_DIR              = normalize(vec3(0.290204, 0.09, -0.955741)); // 
 const vec3  SUN_COLOR            = vec3(1.0, 1.0, 1.0);
 const vec3  SUN_INTENSITY        = vec3(12.0);   // irradiance
 const float SUN_ANGULAR_RADIUS   = 0.01465;      // angular radius of the disk
@@ -38,13 +38,16 @@ const float SIGMA_A = 0.2;
 const vec3  CLOUD_CENTER = vec3(0.0, 3.0, -10.0); 
 const float CLOUD_RADIUS = 2.5;
 
-//Atmosphere Parameters
+//Atmosphere Parameters (km-1)
 const vec3  BETA_RAYLEIGH         = vec3(5.8e-3, 1.35e-2, 3.31e-2);
 const float RAYLEIGH_SCALE_HEIGHT = 8.0;
 const vec3  BETA_MIE              = vec3(4.0e-3, 4.0e-3, 4.0e-3);
 const float MIE_SCALE_HEIGHT      = 1.2;
 const float MIE_G                 = 0.758;
 const float MIE_EXTINCTION_SCALE  = 1.1;
+const vec3  OZONE_ABSORPTION      = vec3(0.20556e-2, 0.49788e-2, 0.02136e-2);
+const float OZONE_CENTER          = 25.0;
+const float OZONE_HALF_WIDTH      = 15.0;
 
 //Ground Parameters
 const vec3  GROUND_ALBEDO         = vec3(0.20, 0.18, 0.15);
@@ -154,8 +157,12 @@ void basis(vec3 n, out vec3 t, out vec3 b) { // Claude generated
     b = vec3(c, s + n.y * n.y * a, -n.y);
 }
 
-vec3 AtmosTransmittance(float odR, float odM) {
-    return exp(-(BETA_RAYLEIGH * odR + BETA_MIE * MIE_EXTINCTION_SCALE * odM));
+vec3 AtmosTransmittance(float odR, float odM, float odO) {
+    return exp(-((BETA_RAYLEIGH) * odR + BETA_MIE * MIE_EXTINCTION_SCALE * odM + OZONE_ABSORPTION * odO));
+}
+
+float ozoneDensity(float h) {
+    return max(0.0, 1.0 - abs(h - OZONE_CENTER) / OZONE_HALF_WIDTH);
 }
 
 float mu_t(vec3 pos) {
@@ -203,8 +210,8 @@ vec3 sample_HG_phase(vec3 dir, float g, inout uint rng) { // Claude generated, t
 // == transmittance / optical depth calculations ==
 // integrate optical depth for just Rayleigh and Mie
 void integrateOpticalDepthAtmos(vec3 ro, vec3 rd, float t0, float t1, int N, float jitter,
-                           out float odR, out float odM) {
-    odR = 0.0; odM = 0.0;
+                           out float odR, out float odM, out float odO) {
+    odR = 0.0; odM = 0.0; odO = 0.0;
     float len = t1 - t0;
     if (len <= 0.0) return;
     for (int i = 0; i < N; i++) {
@@ -218,19 +225,20 @@ void integrateOpticalDepthAtmos(vec3 ro, vec3 rd, float t0, float t1, int N, flo
         float h  = length(p - PLANET_CENTER) - PLANET_RADIUS;
         h = max(h, 0.0);
         odR += exp(-h / RAYLEIGH_SCALE_HEIGHT) * ds;
-        odM += exp(-h / MIE_SCALE_HEIGHT)     * ds;
+        odM += exp(-h / MIE_SCALE_HEIGHT)      * ds;
+        odO += ozoneDensity(h)                 * ds;
     }
 }
 
 // integrate optical depth for Rayleigh, Mie, AND cloud
 void integrateOpticalDepth(vec3 ro, vec3 rd, float t0, float t1, int N, float jitter,
-                           out float odR, out float odM, out float odC) {
+                           out float odR, out float odM, out float odO, out float odC) {
     odR = 0.0; odM = 0.0; odC = 0.0;
     
     float len = t1 - t0;
     if (len <= 0.0) return;
     
-    integrateOpticalDepthAtmos(ro, rd, t0, t1, N, jitter, odR, odM);
+    integrateOpticalDepthAtmos(ro, rd, t0, t1, N, jitter, odR, odM, odO);
 
     float ct0; float ct1; // if the cloud exists on the interval we give it a finer pass
     if (cloudInterval(ro, rd, ct0, ct1)) {
@@ -275,11 +283,11 @@ vec3 sunTransmittance(vec3 p, vec3 sunDir, float jitter) {
         return vec3(0.0);
     float sStart = max(tS0, 0.0);
     float sLen   = tS1 - sStart;
-    float ldR, ldM, ldC;
+    float ldR, ldM, ldO, ldC;
     integrateOpticalDepth(p + sunDir * sStart, sunDir, 0.0, sLen,
-                          ATM_SAMPLES, jitter, ldR, ldM, ldC);
+                          ATM_SAMPLES, jitter, ldR, ldM, ldO, ldC);
 
-    return AtmosTransmittance(ldR, ldM) * exp(-ldC);
+    return AtmosTransmittance(ldR, ldM, ldO) * exp(-ldC);
 }
 
 // == Background stuff ==
@@ -327,14 +335,14 @@ vec3 multiScatterApprox(vec3 p, float h) {
         float s0, s1;
         if (!intersectSphere(q, SUN_DIR, PLANET_CENTER, ATMOSPHERE_RADIUS, s0, s1)) continue;
         float sStart = max(s0, 0.0);
-        float ldR, ldM;
+        float ldR, ldM, ldO;
         integrateOpticalDepthAtmos(q + SUN_DIR * sStart, SUN_DIR, 0.0, s1 - sStart,
-                              MS_INTEGRATION, 0.5, ldR, ldM);
-        vec3 T_sun = AtmosTransmittance(ldR, ldM);
+                              MS_INTEGRATION, 0.5, ldR, ldM, ldO);
+        vec3 T_sun = AtmosTransmittance(ldR, ldM, ldO);
 
-        float pR, pM;
-        integrateOpticalDepthAtmos(q, -up, 0.0, sk, MS_INTEGRATION, 0.5, pR, pM);
-        vec3 T_qp = AtmosTransmittance(pR, pM);
+        float pR, pM, pO;
+        integrateOpticalDepthAtmos(q, -up, 0.0, sk, MS_INTEGRATION, 0.5, pR, pM, pO);
+        vec3 T_qp = AtmosTransmittance(pR, pM, pO);
 
         float rhoR = exp(-hq / RAYLEIGH_SCALE_HEIGHT);
         float rhoM = exp(-hq / MIE_SCALE_HEIGHT);
@@ -355,13 +363,15 @@ void traceAtmosphereAndCloud(vec3 ro, vec3 rd,
                      out vec3 inscatterM,
                      out vec3 inscatterMS,
                      out float odR,
-                     out float odM)
+                     out float odM,
+                     out float odO)
 {
     inscatterR  = vec3(0.0);
     inscatterM  = vec3(0.0);
     inscatterMS = vec3(0.0);
     odR = 0.0;
     odM = 0.0;
+    odO = 0.0;
 
     // first integrate from start to cloud
 
@@ -381,8 +391,9 @@ void traceAtmosphereAndCloud(vec3 ro, vec3 rd,
 
         float dzR = exp(-h / RAYLEIGH_SCALE_HEIGHT) * ds;
         float dzM = exp(-h / MIE_SCALE_HEIGHT)      * ds;
+        float dzO = ozoneDensity(h)                 * ds;
 
-        vec3 atmosAtt = AtmosTransmittance(odR + 0.5 * dzR, odM + 0.5 * dzM);
+        vec3 atmosAtt = AtmosTransmittance(odR + 0.5 * dzR, odM + 0.5 * dzM, odO + 0.5 * dzO);
 
         odR += dzR;
         odM += dzM;
@@ -410,9 +421,10 @@ void traceAtmosphereAndCloud(vec3 ro, vec3 rd,
 
             float dzR = exp(-h / RAYLEIGH_SCALE_HEIGHT) * step_size;
             float dzM = exp(-h / MIE_SCALE_HEIGHT)      * step_size;
+            float dzO = ozoneDensity(h)                 * step_size;
             float dzC = mu_t(curr)                      * step_size;
 
-            vec3 atmosAtt = AtmosTransmittance(odR + 0.5 * dzR, odM + 0.5 * dzM);
+            vec3 atmosAtt = AtmosTransmittance(odR + 0.5 * dzR, odM + 0.5 * dzM, odO + 0.5 * dzO);
             vec3 cloudAtt = vec3(exp(-(odC + 0.5 * dzC)));
 
             odR += dzR;
@@ -452,8 +464,9 @@ void traceAtmosphereAndCloud(vec3 ro, vec3 rd,
 
         float dzR = exp(-h / RAYLEIGH_SCALE_HEIGHT) * ds;
         float dzM = exp(-h / MIE_SCALE_HEIGHT)      * ds;
-
-        vec3 atmosAtt = AtmosTransmittance(odR + 0.5 * dzR, odM + 0.5 * dzM);
+        float dzO = ozoneDensity(h)                 * ds;
+ 
+        vec3 atmosAtt = AtmosTransmittance(odR + 0.5 * dzR, odM + 0.5 * dzM, odO + 0.5 * dzO);
 
         odR += dzR;
         odM += dzM;
@@ -476,13 +489,15 @@ void traceAtmosphere(vec3 ro, vec3 rd,
                      out vec3 inscatterM,
                      out vec3 inscatterMS,
                      out float odR,
-                     out float odM)
+                     out float odM,
+                     out float odO)
 {
     inscatterR  = vec3(0.0);
     inscatterM  = vec3(0.0);
     inscatterMS = vec3(0.0);
     odR = 0.0;
     odM = 0.0;
+    odO = 0.0;
 
 
     float len = max(tMax - tMin, 1e-4);
@@ -501,8 +516,9 @@ void traceAtmosphere(vec3 ro, vec3 rd,
 
         float dzR = exp(-h / RAYLEIGH_SCALE_HEIGHT) * ds;
         float dzM = exp(-h / MIE_SCALE_HEIGHT)      * ds;
+        float dzO = ozoneDensity(h)                 * ds;
 
-        vec3 atmosAtt = AtmosTransmittance(odR + 0.5 * dzR, odM + 0.5 * dzM);
+        vec3 atmosAtt = AtmosTransmittance(odR + 0.5 * dzR, odM + 0.5 * dzM, odO + 0.5 * dzO);
 
         odR += dzR;
         odM += dzM;
@@ -528,17 +544,17 @@ void atmosRadTrans(vec3 ro, vec3 rd,
                      ) {
 
     vec3  aR, aM, aMS;
-    float aOdR, aOdM;
+    float aOdR, aOdM, aOdO;
 
     if (hasCloud) {
         traceAtmosphereAndCloud(ro, rd, tMin, tMax, tCloud0, tCloud1, hasCloud, rng,
-                    aR, aM, aMS, aOdR, aOdM);
+                    aR, aM, aMS, aOdR, aOdM, aOdO);
     } else {
         traceAtmosphere(ro, rd, tMin, tMax, rng,
-                    aR, aM, aMS, aOdR, aOdM);
+                    aR, aM, aMS, aOdR, aOdM, aOdO);
     }
 
-    T_atm = AtmosTransmittance(aOdR, aOdM);
+    T_atm = AtmosTransmittance(aOdR, aOdM, aOdO);
 
     float cosT   = dot(rd, SUN_DIR);
     atmRad    = SUN_INTENSITY * SUN_COLOR * (
@@ -597,10 +613,10 @@ vec3 cloudRadiance(vec3 ro, vec3 rd, inout uint rng) {
             if (depth == 0) break;
             // We escape the cloud, add in light from the atmosphere
 
-            float vOdR; float vOdM;
+            float vOdR; float vOdM; float vOdO;
 
-            integrateOpticalDepthAtmos(x, rd, 0.0, tb, ATM_SAMPLES / 2 + 1, rand(rng), vOdR, vOdM);
-            vec3 T_atmos_in_cloud = AtmosTransmittance(vOdR, vOdM);
+            integrateOpticalDepthAtmos(x, rd, 0.0, tb, ATM_SAMPLES / 2 + 1, rand(rng), vOdR, vOdM, vOdO);
+            vec3 T_atmos_in_cloud = AtmosTransmittance(vOdR, vOdM, vOdO);
 
             throughput *= T_atmos_in_cloud;
 
@@ -635,10 +651,10 @@ vec3 cloudRadiance(vec3 ro, vec3 rd, inout uint rng) {
         float sdf_y = map(y);
         float sigma_t = sdf_y < 0.0 ? (SIGMA_A + SIGMA_S) : 0.0;
 
-        float vOdR; float vOdM;
+        float vOdR; float vOdM; float vOdO;
 
-        integrateOpticalDepthAtmos(x, rd, 0.0, ta + tau, ATM_SAMPLES / 2 + 1, rand(rng), vOdR, vOdM);
-        vec3 T_atmos_in_cloud = AtmosTransmittance(vOdR, vOdM);
+        integrateOpticalDepthAtmos(x, rd, 0.0, ta + tau, ATM_SAMPLES / 2 + 1, rand(rng), vOdR, vOdM, vOdO);
+        vec3 T_atmos_in_cloud = AtmosTransmittance(vOdR, vOdM, vOdO);
 
         // update throughput for scattering
         throughput *= (sdf_y < 0.0 ? SIGMA_S : 0.0) / max(sigma_t, 1e-6) * T_atmos_in_cloud;
@@ -748,10 +764,10 @@ void main() {
         cloud = sampleClouds(ro, rd, rng, T_cloud);
         
         // atmosphere between the camera and the cloud, used to attenuate the cloud's in-scatter
-        float vOdR, vOdM;
+        float vOdR, vOdM, vOdO;
         // we dont need the full integrateOpticalDepth func since the cloud is guaranteed not to exist here
-        integrateOpticalDepthAtmos(ro, rd, tMin, tCloud0, ATM_SAMPLES, rand(rng), vOdR, vOdM);
-        T_front = AtmosTransmittance(vOdR, vOdM);
+        integrateOpticalDepthAtmos(ro, rd, tMin, tCloud0, ATM_SAMPLES, rand(rng), vOdR, vOdM, vOdO);
+        T_front = AtmosTransmittance(vOdR, vOdM, vOdO);
     }
 
 
@@ -786,4 +802,6 @@ Problems and in progress stuff
 different (biased) quadrature for atmosphere depending on if the cloud exists (seams)
     - current fix is that they both converge to the same val with higher ATMOS_SAMPLES
 
+
+chapman layer function for ozone
 */
