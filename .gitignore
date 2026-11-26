@@ -374,10 +374,9 @@ build/
 
 CMakeLists.txt
 
-render_output.ppm
 
 *.DS_Store
 
 .commandcode/
 
-
+*.png

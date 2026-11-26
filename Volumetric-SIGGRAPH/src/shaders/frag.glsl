@@ -397,6 +397,7 @@ void traceAtmosphereAndCloud(vec3 ro, vec3 rd,
 
         odR += dzR;
         odM += dzM;
+        odO += dzO;
 
         float jitS = rand(rng);
         vec3 sunAtt = sunTransmittance(p, SUN_DIR, jitS);
@@ -429,6 +430,7 @@ void traceAtmosphereAndCloud(vec3 ro, vec3 rd,
 
             odR += dzR;
             odM += dzM;
+            odO += dzO;
             odC += dzC;
 
             float jitS = rand(rng);
@@ -470,6 +472,7 @@ void traceAtmosphereAndCloud(vec3 ro, vec3 rd,
 
         odR += dzR;
         odM += dzM;
+        odO += dzO;
 
         float jitS = rand(rng);
         vec3 sunAtt = sunTransmittance(p, SUN_DIR, jitS);
@@ -522,6 +525,7 @@ void traceAtmosphere(vec3 ro, vec3 rd,
 
         odR += dzR;
         odM += dzM;
+        odO += dzO;
 
         float jitS = rand(rng);
         vec3 sunAtt = sunTransmittance(p, SUN_DIR, jitS);
