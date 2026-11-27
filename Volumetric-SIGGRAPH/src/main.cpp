@@ -42,28 +42,33 @@ int main() {
 
 
     const char* vert_path = "src/shaders/vert.glsl";
-    const char* frag_path = "src/shaders/frag.glsl";
-
-    Shader main_shaders(frag_path, vert_path);
-
+    const char* realtime_frag_path = "src/shaders/realtime_frag.glsl";
     const char* realtime_post_path = "src/shaders/realtime_post.glsl";
+    const char* snapshot_frag_path = "src/shaders/snapshot_frag.glsl";
+    const char* snapshot_post_path = "src/shaders/snapshot_post.glsl";
 
+    Shader realtime_shaders(realtime_frag_path, vert_path);
+    Shader snapshot_shaders(snapshot_frag_path, vert_path);
     Shader rp_shaders(realtime_post_path, vert_path);
-
-    const char* final_post_path = "src/shaders/final_post.glsl";
-
-    Shader fp_shaders(final_post_path, vert_path);
+    Shader sp_shaders(snapshot_post_path, vert_path);
 
     // == INIT DATA ==
 
-    int resLoc = glGetUniformLocation(main_shaders.getProgram(), "iResolution");
-    int frameLoc = glGetUniformLocation(main_shaders.getProgram(), "frame");
-    int postLoc = glGetUniformLocation(main_shaders.getProgram(), "postprocess");
+    int resLoc = glGetUniformLocation(realtime_shaders.getProgram(), "iResolution");
+    int frameLoc = glGetUniformLocation(realtime_shaders.getProgram(), "frame");
 
-    int camPosLoc = glGetUniformLocation(main_shaders.getProgram(), "CAMERA_POS");
-    int camDirLoc = glGetUniformLocation(main_shaders.getProgram(), "CAMERA_DIR");
-    int camUpLoc = glGetUniformLocation(main_shaders.getProgram(), "CAMERA_UP");
-    int camRightLoc = glGetUniformLocation(main_shaders.getProgram(), "CAMERA_RIGHT");
+    int camPosLoc = glGetUniformLocation(realtime_shaders.getProgram(), "CAMERA_POS");
+    int camDirLoc = glGetUniformLocation(realtime_shaders.getProgram(), "CAMERA_DIR");
+    int camUpLoc = glGetUniformLocation(realtime_shaders.getProgram(), "CAMERA_UP");
+    int camRightLoc = glGetUniformLocation(realtime_shaders.getProgram(), "CAMERA_RIGHT");
+
+    int resLocs = glGetUniformLocation(snapshot_shaders.getProgram(), "iResolution");
+    int frameLocs = glGetUniformLocation(snapshot_shaders.getProgram(), "frame");
+
+    int camPosLocs = glGetUniformLocation(snapshot_shaders.getProgram(), "CAMERA_POS");
+    int camDirLocs = glGetUniformLocation(snapshot_shaders.getProgram(), "CAMERA_DIR");
+    int camUpLocs = glGetUniformLocation(snapshot_shaders.getProgram(), "CAMERA_UP");
+    int camRightLocs = glGetUniformLocation(snapshot_shaders.getProgram(), "CAMERA_RIGHT");
 
     float vertices[] = {
          1.0f,  1.0f, 0.0f,
@@ -99,8 +104,8 @@ int main() {
     // generate textures and FBOS
     unsigned int accumFBO;
     unsigned int accumTex;
-    unsigned int finalFBO;
-    unsigned int finalTex;
+    unsigned int snapshotFBO;
+    unsigned int snapshotTex;
     
     {
         glGenFramebuffers(1, &accumFBO);
@@ -116,18 +121,18 @@ int main() {
 
         glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, accumTex, 0);
 
-        glGenFramebuffers(1, &finalFBO);
-        glBindFramebuffer(GL_FRAMEBUFFER, finalFBO);
+        glGenFramebuffers(1, &snapshotFBO);
+        glBindFramebuffer(GL_FRAMEBUFFER, snapshotFBO);
         
-        glGenTextures(1, &finalTex);
-        glBindTexture(GL_TEXTURE_2D, finalTex);
+        glGenTextures(1, &snapshotTex);
+        glBindTexture(GL_TEXTURE_2D, snapshotTex);
 
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16, scene.snapshot_width, scene.snapshot_height, 0, GL_RGBA, GL_UNSIGNED_SHORT, 0);
 
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 
-        glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, finalTex, 0);
+        glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, snapshotTex, 0);
     }
 
     int frame = 0;
@@ -144,7 +149,7 @@ int main() {
             glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT);
 
-            main_shaders.useProgram();
+            realtime_shaders.useProgram();
 
             int fbW, fbH;
             glfwGetFramebufferSize(window, &fbW, &fbH);
@@ -153,7 +158,6 @@ int main() {
             {
                 glUniform2f(resLoc, (float)fbW, (float)fbH);
                 glUniform1i(frameLoc, frame);
-                glUniform1i(postLoc, 1);
                 glUniform3f(camPosLoc, camera.pos[0], camera.pos[1], camera.pos[2]);
                 glUniform3f(camDirLoc, camera.forward[0], camera.forward[1], camera.forward[2]);
                 glUniform3f(camUpLoc, camera.up[0], camera.up[1], camera.up[2]);
@@ -205,16 +209,15 @@ int main() {
                 glEnable(GL_BLEND);
                 glBlendFunc(GL_CONSTANT_ALPHA, GL_ONE_MINUS_CONSTANT_ALPHA);
 
-                main_shaders.useProgram();
+                snapshot_shaders.useProgram();
                 {
-                    glUniform2f(resLoc, (float)scene.snapshot_width, (float)scene.snapshot_height);
-                    glUniform1i(frameLoc, frame++);
-                    glUniform1i(postLoc, 0);
+                    glUniform2f(resLocs, (float)scene.snapshot_width, (float)scene.snapshot_height);
+                    glUniform1i(frameLocs, frame++);
                         
-                    glUniform3f(camPosLoc, camera.pos[0], camera.pos[1], camera.pos[2]);
-                    glUniform3f(camDirLoc, camera.forward[0], camera.forward[1], camera.forward[2]);
-                    glUniform3f(camUpLoc, camera.up[0], camera.up[1], camera.up[2]);
-                    glUniform3f(camRightLoc, camera.right[0], camera.right[1], camera.right[2]);
+                    glUniform3f(camPosLocs, camera.pos[0], camera.pos[1], camera.pos[2]);
+                    glUniform3f(camDirLocs, camera.forward[0], camera.forward[1], camera.forward[2]);
+                    glUniform3f(camUpLocs, camera.up[0], camera.up[1], camera.up[2]);
+                    glUniform3f(camRightLocs, camera.right[0], camera.right[1], camera.right[2]);
                 }
 
 
@@ -241,9 +244,9 @@ int main() {
             }
 
             // final post-process pass for png
-            glBindFramebuffer(GL_FRAMEBUFFER, finalFBO);
+            glBindFramebuffer(GL_FRAMEBUFFER, snapshotFBO);
             glViewport(0, 0, scene.snapshot_width, scene.snapshot_height);
-            fp_shaders.useProgram();
+            sp_shaders.useProgram();
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, accumTex);
             glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);

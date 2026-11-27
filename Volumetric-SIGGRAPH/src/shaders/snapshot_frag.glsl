@@ -5,7 +5,6 @@ layout(location = 0) out vec4 fragColor;
 
 uniform vec2 iResolution;
 uniform int frame;
-uniform int postprocess;
 
 uniform vec3 CAMERA_POS;
 uniform vec3 CAMERA_DIR;
@@ -19,7 +18,7 @@ const float TAN_HALF_FOV         = 0.57735026918962576; // tan(30°), half of th
 const float EXPOSURE              = 2.3;
 
 //Solar Parameters
-const vec3  SUN_DIR              = normalize(vec3(0.290204, 0.09, -0.955741)); // 
+const vec3  SUN_DIR              = normalize(vec3(0.290204, 0.09 , -0.955741)); // 
 const vec3  SUN_COLOR            = vec3(1.0, 1.0, 1.0);
 const vec3  SUN_INTENSITY        = vec3(12.0);   // irradiance
 const float SUN_ANGULAR_RADIUS   = 0.01465;      // angular radius of the disk
@@ -33,10 +32,12 @@ const vec3  PLANET_CENTER        = vec3(0.0, -(PLANET_RADIUS + 0.1), 0.0);
 
 //Cloud Parameters
 const float HG_G = 0.85;
-const float SIGMA_S = 0.7;
-const float SIGMA_A = 0.2;
+const float SIGMA_S = 0.75;
+const float SIGMA_A = 0.25;
 const vec3  CLOUD_CENTER = vec3(0.0, 3.0, -10.0); 
 const float CLOUD_RADIUS = 2.5;
+const float MU_BAR = SIGMA_A + SIGMA_S;
+
 
 //Atmosphere Parameters (km-1)
 const vec3  BETA_RAYLEIGH         = vec3(5.8e-3, 1.35e-2, 3.31e-2);
@@ -45,17 +46,17 @@ const vec3  BETA_MIE              = vec3(4.0e-3, 4.0e-3, 4.0e-3);
 const float MIE_SCALE_HEIGHT      = 1.2;
 const float MIE_G                 = 0.758;
 const float MIE_EXTINCTION_SCALE  = 1.1;
-const vec3  OZONE_ABSORPTION      = vec3(0.20556e-2, 0.49788e-2, 0.02136e-2);
+const vec3  OZONE_ABSORPTION      = vec3(0.4719e-3, 1.3656e-3, 0.0617e-3);
 const float OZONE_CENTER          = 25.0;
-const float OZONE_HALF_WIDTH      = 15.0;
+const float OZONE_SCALE_HEIGHT    = 5.0;
 
 //Ground Parameters
 const vec3  GROUND_ALBEDO         = vec3(0.20, 0.18, 0.15);
 
 //Rendering Samples
-const int ATM_SAMPLES   = 8;
+const int ATM_SAMPLES   = 32;
 const int CLOUD_SAMPLES   = 1;
-const int ATM_CLOUD_SAMPLES = 8;
+const int ATM_CLOUD_SAMPLES = 4;
 const int MS_STEPS       = 3;
 const int MS_INTEGRATION = 3;
 
@@ -97,12 +98,6 @@ float map(vec3 p) {
     float s1 = sdf_sphere(p, CLOUD_CENTER, CLOUD_RADIUS / 1.3);
     float s2 = sdf_sphere(p, CLOUD_CENTER + vec3(0.2, 0.0, 0.0), CLOUD_RADIUS / 4.0);
     return s1;//smin(s1, s2, 0.05);
-}
-
-vec3 tonemap(vec3 color) {
-    vec3 m = color * EXPOSURE;
-    m = 1.0 - exp(-max(m, vec3(0.0)));
-    return pow(clamp(m, 0.0, 1.0), vec3(1.0 / 2.2));
 }
 
 vec3 generateRay(vec2 fragCoord) {
@@ -162,7 +157,8 @@ vec3 AtmosTransmittance(float odR, float odM, float odO) {
 }
 
 float ozoneDensity(float h) {
-    return max(0.0, 1.0 - abs(h - OZONE_CENTER) / OZONE_HALF_WIDTH);
+    float t = (h - OZONE_CENTER) / OZONE_SCALE_HEIGHT;
+    return exp(0.5 * (1 - t - exp(-t)));
 }
 
 float mu_t(vec3 pos) {
@@ -230,50 +226,51 @@ void integrateOpticalDepthAtmos(vec3 ro, vec3 rd, float t0, float t1, int N, flo
     }
 }
 
+// ratio tracking (RETURNS TRANSMITTANCE)
+float integrateTransmittanceCloud(vec3 x, vec3 y, inout uint rng) {
+    vec3 d = y - x;
+    float len = length(d);
+    if (len < 1e-6) return 1.0;
+    vec3 rd = d / len;
+
+    float T = 1.0;
+    float tau = 0.0;
+    float tau_max = len;
+
+    for (int i = 0; i < 4096; i++) {
+        tau -= log(1.0 - max(rand(rng), 1e-7)) / MU_BAR;
+        if (tau >= tau_max || T <= 0.0) break;
+        
+        T *= 1.0 - (mu_t(x + tau * rd) / MU_BAR);
+    }
+
+    return T;
+}
+
 // integrate optical depth for Rayleigh, Mie, AND cloud
-void integrateOpticalDepth(vec3 ro, vec3 rd, float t0, float t1, int N, float jitter,
-                           out float odR, out float odM, out float odO, out float odC) {
-    odR = 0.0; odM = 0.0; odC = 0.0;
+void integrateOpticalDepth(vec3 ro, vec3 rd, float t0, float t1, int N, inout uint rng,
+                           out float odR, out float odM, out float odO, out float tC) {
+    odR = 0.0; odM = 0.0; tC = 1.0;
     
     float len = t1 - t0;
     if (len <= 0.0) return;
     
-    integrateOpticalDepthAtmos(ro, rd, t0, t1, N, jitter, odR, odM, odO);
+    integrateOpticalDepthAtmos(ro, rd, t0, t1, N, rand(rng), odR, odM, odO);
 
     float ct0; float ct1; // if the cloud exists on the interval we give it a finer pass
     if (cloudInterval(ro, rd, ct0, ct1)) {
 
         if (ct0 < t0) ct0 = t0;
         if (ct1 > t1) ct1 = t1;
-
-        float cLen = ct1 - ct0;
-        for (float s = 0.0; s < cLen; s += dt) {
-            float h = min(dt, cLen - s);
-            vec3  p = ro + (ct0 + s + jitter * h) * rd;
-            odC += mu_t(p) * h;
+        if (ct0 < t1) {
+            tC = integrateTransmittanceCloud(ro + rd * ct0, ro + rd * ct1, rng);
         }
-    } // replace with ratio / delta tracking?
-}
-
-// riemman sum / raymarch
-float integrateOpticalDepthCloud(vec3 x, vec3 y, inout uint rng) {
-    vec3 d = y - x;
-    float len = length(d);
-    if (len < 1e-6) return 1.0;
-    vec3 dir = d / len;
-
-    float optical_depth = 0.0;
-
-    for (float s = 0.0; s < len; s += dt) {
-        float h = min(dt, len - s);
-        optical_depth += mu_t(x + (s + rand(rng) * h) * dir) * h;
+        
     }
-
-    return optical_depth;
 }
 
 // transmittance from p to sun, including cloud
-vec3 sunTransmittance(vec3 p, vec3 sunDir, float jitter) {
+vec3 sunTransmittance(vec3 p, vec3 sunDir, inout uint rng) {
     float tG0, tG1;
     if (intersectSphere(p, sunDir, PLANET_CENTER, PLANET_RADIUS, tG0, tG1) && tG0 > 0.0) {
         return vec3(0.0);
@@ -283,18 +280,18 @@ vec3 sunTransmittance(vec3 p, vec3 sunDir, float jitter) {
         return vec3(0.0);
     float sStart = max(tS0, 0.0);
     float sLen   = tS1 - sStart;
-    float ldR, ldM, ldO, ldC;
+    float ldR, ldM, ldO, tC;
     integrateOpticalDepth(p + sunDir * sStart, sunDir, 0.0, sLen,
-                          ATM_SAMPLES, jitter, ldR, ldM, ldO, ldC);
+                          ATM_SAMPLES, rng, ldR, ldM, ldO, tC);
 
-    return AtmosTransmittance(ldR, ldM, ldO) * exp(-ldC);
+    return AtmosTransmittance(ldR, ldM, ldO) * tC;
 }
 
 // == Background stuff ==
 // returns unattenuated radiance, path transmittance is applied by the caller
-vec3 shadeGround(vec3 gP, vec3 n, vec3 sunDir, float jitter) {
+vec3 shadeGround(vec3 gP, vec3 n, vec3 sunDir, inout uint rng) {
     gP = gP + 1e-2 * n;
-    vec3 sunAtt = sunTransmittance(gP, sunDir, jitter);
+    vec3 sunAtt = sunTransmittance(gP, sunDir, rng);
     float NdotL = max(dot(n, sunDir), 0.0);
     return GROUND_ALBEDO / PI * SUN_INTENSITY * SUN_COLOR * sunAtt * NdotL;
 }
@@ -400,7 +397,7 @@ void traceAtmosphereAndCloud(vec3 ro, vec3 rd,
         odO += dzO;
 
         float jitS = rand(rng);
-        vec3 sunAtt = sunTransmittance(p, SUN_DIR, jitS);
+        vec3 sunAtt = sunTransmittance(p, SUN_DIR, rng);
 
         inscatterR += dzR * sunAtt * atmosAtt;
         inscatterM += dzM * sunAtt * atmosAtt;
@@ -410,7 +407,7 @@ void traceAtmosphereAndCloud(vec3 ro, vec3 rd,
     }
 
     // then integrate from cloud start to cloud end (more samples here)
-    float odC = 0.0;
+    vec3 cloudT = vec3(1.0);
 
     if (hasCloud) {
         float cloud_len = max(tCloud1 - tCloud0, 1e-4);
@@ -420,28 +417,33 @@ void traceAtmosphereAndCloud(vec3 ro, vec3 rd,
         for (int i = 0; i < ATM_CLOUD_SAMPLES; i++) {
             float h  = max(length(curr - PLANET_CENTER) - PLANET_RADIUS, 0.0);
 
+            float s0 = tCloud0 + float(i) * step_size;
+            float s1 = s0 + step_size;
+            float sm = s0 + rand(rng) * step_size;
+            vec3 curr = ro + sm * rd;
+
+            cloudT *= integrateTransmittanceCloud(ro + s0 * rd, curr, rng);
+
             float dzR = exp(-h / RAYLEIGH_SCALE_HEIGHT) * step_size;
             float dzM = exp(-h / MIE_SCALE_HEIGHT)      * step_size;
             float dzO = ozoneDensity(h)                 * step_size;
-            float dzC = mu_t(curr)                      * step_size;
 
             vec3 atmosAtt = AtmosTransmittance(odR + 0.5 * dzR, odM + 0.5 * dzM, odO + 0.5 * dzO);
-            vec3 cloudAtt = vec3(exp(-(odC + 0.5 * dzC)));
 
             odR += dzR;
             odM += dzM;
             odO += dzO;
-            odC += dzC;
 
             float jitS = rand(rng);
-            vec3 sunAtt = sunTransmittance(curr, SUN_DIR, jitS);
+            vec3 sunAtt = sunTransmittance(curr, SUN_DIR, rng);
 
-            inscatterR += dzR * sunAtt * atmosAtt * cloudAtt;
-            inscatterM += dzM * sunAtt * atmosAtt * cloudAtt;
+            inscatterR += dzR * sunAtt * atmosAtt * cloudT;
+            inscatterM += dzM * sunAtt * atmosAtt * cloudT;
         
             vec3 L_inc = multiScatterApprox(curr, h);
-            inscatterMS += (dzR * BETA_RAYLEIGH + dzM * BETA_MIE) * L_inc * atmosAtt * cloudAtt;
-
+            inscatterMS += (dzR * BETA_RAYLEIGH + dzM * BETA_MIE) * L_inc * atmosAtt * cloudT;
+            
+            cloudT *= integrateTransmittanceCloud(curr, ro + s1 * rd, rng);
             curr = curr + step_size * rd;
         }
     }
@@ -450,7 +452,6 @@ void traceAtmosphereAndCloud(vec3 ro, vec3 rd,
     // finally integrate from cloud end to atmosphere end
 
     len = max(tMax - tCloud1, 1e-4);
-    vec3 cloudAtt = vec3(exp(-odC));
 
     for (int i = 0; i < ATM_SAMPLES; i++) {
         float jitter = rand(rng);
@@ -475,13 +476,13 @@ void traceAtmosphereAndCloud(vec3 ro, vec3 rd,
         odO += dzO;
 
         float jitS = rand(rng);
-        vec3 sunAtt = sunTransmittance(p, SUN_DIR, jitS);
+        vec3 sunAtt = sunTransmittance(p, SUN_DIR, rng);
 
-        inscatterR += dzR * sunAtt * atmosAtt * cloudAtt;
-        inscatterM += dzM * sunAtt * atmosAtt * cloudAtt;
+        inscatterR += dzR * sunAtt * atmosAtt * cloudT;
+        inscatterM += dzM * sunAtt * atmosAtt * cloudT;
         
         vec3 L_inc = multiScatterApprox(p, h);
-        inscatterMS += (dzR * BETA_RAYLEIGH + dzM * BETA_MIE) * L_inc * atmosAtt * cloudAtt;
+        inscatterMS += (dzR * BETA_RAYLEIGH + dzM * BETA_MIE) * L_inc * atmosAtt * cloudT;
     }
 }
 
@@ -528,7 +529,7 @@ void traceAtmosphere(vec3 ro, vec3 rd,
         odO += dzO;
 
         float jitS = rand(rng);
-        vec3 sunAtt = sunTransmittance(p, SUN_DIR, jitS);
+        vec3 sunAtt = sunTransmittance(p, SUN_DIR, rng);
 
         inscatterR += dzR * sunAtt * atmosAtt;
         inscatterM += dzM * sunAtt * atmosAtt;
@@ -580,8 +581,6 @@ vec3 cloudRadiance(vec3 ro, vec3 rd, inout uint rng) {
     // basically we always mult the next radiance() call by  mu_s(y) / mu_t(y) so we store those and use them at the end
     vec3 throughput = vec3(1.0);
 
-    float mu_bar = SIGMA_A + SIGMA_S;
-
     // to avoid stalling thread groups and the like we have a max depth, even though russian roulette early exits
     for (int depth = 0; depth < 256; depth++) {
 
@@ -605,9 +604,9 @@ vec3 cloudRadiance(vec3 ro, vec3 rd, inout uint rng) {
         bool collided = false;
 
         for (int i = 0; i < 4096; i++) { // again, max depth just in case
-            tau -= log(1.0 - max(rand(rng), 1e-7)) / mu_bar;
+            tau -= log(1.0 - max(rand(rng), 1e-7)) / MU_BAR;
             if (tau >= tau_max) break;
-            if (rand(rng) < mu_t(x + (ta + tau) * rd) / mu_bar) {
+            if (rand(rng) < mu_t(x + (ta + tau) * rd) / MU_BAR) {
                 collided = true;
                 break;
             }
@@ -641,7 +640,7 @@ vec3 cloudRadiance(vec3 ro, vec3 rd, inout uint rng) {
             if (hitGroundFlag && tGround0 > 1e-2) {
                 vec3 gP = x + rd * tGround0;
                 vec3 n  = normalize(gP - PLANET_CENTER);
-                bg += shadeGround(gP, n, SUN_DIR, rand(rng));
+                bg += shadeGround(gP, n, SUN_DIR, rng);
             }
 
             col += throughput * (atmRad + T_atm * bg);
@@ -676,7 +675,7 @@ vec3 cloudRadiance(vec3 ro, vec3 rd, inout uint rng) {
             y_exit = y + max(ts1, 0.0) * w_i;
         }
 
-        vec3 T_atmos_cloud = sunTransmittance(y, w_i, rand(rng));
+        vec3 T_atmos_cloud = sunTransmittance(y, w_i, rng);
         // with NEE we directly find the incoming light instead of waiting to randomly sample it
         col += throughput * SUN_INTENSITY * SUN_COLOR * HG_phase(HG_G, dot(rd, w_i)) * T_atmos_cloud;
 
@@ -717,7 +716,7 @@ vec3 sampleClouds(vec3 ro, vec3 rd, inout uint rng, out float T) {
     // geometric transmittance of the whole cloud interval, used for compositing
     float t0, t1;
     if (cloudInterval(ro, rd, t0, t1)) {
-        T = exp(-integrateOpticalDepthCloud(ro + t0 * rd, ro + t1 * rd, rng));
+        T = integrateTransmittanceCloud(ro + t0 * rd, ro + t1 * rd, rng);
     } else {
         T = 1.0;
     }
@@ -754,6 +753,9 @@ void main() {
     bool  hasCloud = cloudInterval(ro, rd, tCloud0, tCloud1)
                   && tCloud1 > tMin && tCloud0 < tMax;
 
+    if (tCloud0 < tMin) tCloud0 = tMin;
+    if (tCloud1 > tMax) tCloud1 = tMax;
+
     // Calculate transmittance and radiance for the atmosphere
     vec3 atmRad; vec3 T_atm;
     atmosRadTrans(ro, rd, tMin, tMax, rand(rng), rng, hasCloud, tCloud0, tCloud1, T_atm, atmRad);
@@ -780,7 +782,7 @@ void main() {
     if (hitGroundFlag && tGround0 > 1e-2) {
         vec3 gP = ro + rd * tGround0;
         vec3 n  = normalize(gP - PLANET_CENTER);
-        bg += shadeGround(gP, n, SUN_DIR, rand(rng));
+        bg += shadeGround(gP, n, SUN_DIR, rng);
     } else {
         bg += shadeSunDisk(dot(rd, SUN_DIR));
     }
@@ -790,11 +792,7 @@ void main() {
     // full atmosphere transmittance * cloud transmittance * background color
     vec3 color = atmRad + T_front * cloud + T_atm * vec3(T_cloud) * bg;
 
-    if (postprocess == 1) {
-        fragColor = vec4(tonemap(color), 1.0);
-    } else {
-        fragColor = vec4(color, 1.0);
-    }
+    fragColor = vec4(color, 1.0);
     
 }
 
