@@ -9,7 +9,7 @@ void process_input(GLFWwindow* window, Camera& camera);
 
 const bool kIsOffline = false; 
 const std::string kOutputFilename = "render_output.ppm";
-const int kOfflineSamples = 100;
+const int kOfflineSamples = 50;
 
 Scene scene;
 
@@ -241,8 +241,6 @@ int main() {
                 glfwPollEvents();
                 process_input(window, camera);
                 glFinish();
-
-                std::cout << "Sample " << i << " Complete" << std::endl;
             }
 
             // final post-process pass for png
