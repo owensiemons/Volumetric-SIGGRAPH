@@ -59,7 +59,6 @@ const int MS_STEPS       = 2;
 const int MS_INTEGRATION = 2;
 
 const float dt = 0.05;
-const float SUN_CLOUD_DT = 0.1;
 
 
 // == RNG stuff ==

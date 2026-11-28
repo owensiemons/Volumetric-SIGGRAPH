@@ -55,13 +55,11 @@ const vec3  GROUND_ALBEDO         = vec3(0.20, 0.18, 0.15);
 
 //Rendering Samples
 const int ATM_SAMPLES   = 32;
-const int CLOUD_SAMPLES   = 1;
+const int CLOUD_SAMPLES   = 3;
 const int ATM_CLOUD_SAMPLES = 4;
 const int MS_STEPS       = 3;
 const int MS_INTEGRATION = 3;
 
-const float dt = 0.01;
-const float SUN_CLOUD_DT = 0.1;
 
 
 // == RNG stuff ==
@@ -682,7 +680,7 @@ vec3 cloudRadiance(vec3 ro, vec3 rd, inout uint rng) {
         // here we do russian roulette with p = max(throughput)
         // this is because we dont want to skip paths with high "energy"
         // same reason we only do RR with depth > 3
-        float p = clamp(max(throughput.x, max(throughput.y, throughput.z)), 0.1, 1.0);
+        float p = clamp(max(throughput.x, max(throughput.y, throughput.z)), 0.001, 1.0);
         if (depth > 3) {
             if (rand(rng) > p) {
                 break;
